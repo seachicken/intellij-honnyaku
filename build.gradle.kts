@@ -30,6 +30,7 @@ dependencies {
 }
 
 val honnyakuVersion = providers.gradleProperty("honnyakuVersion").get()
+version = providers.gradleProperty("pluginVersion").getOrElse(version.toString())
 
 val nativeFiles = listOf("linux", "mac", "windows").flatMap { os ->
     listOf("x86_64", "arm64").map { arch ->
@@ -51,6 +52,10 @@ val nativeFiles = listOf("linux", "mac", "windows").flatMap { os ->
 }.toMap()
 
 intellijPlatform {
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
+        channels = listOf(version.toString().substringAfter('-', "").substringBefore('.').ifEmpty { "default" })
+    }
     pluginConfiguration.ideaVersion.sinceBuild = "261"
     nativeVariants {
         enabled = true
