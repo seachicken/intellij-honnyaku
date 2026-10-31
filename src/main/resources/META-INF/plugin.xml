@@ -5,23 +5,22 @@
 
     <!-- Public plugin name should be written in Title Case.
      Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
-    <name>Intellij-honnyaku</name>
+    <name>Honnyaku</name>
 
     <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
-    <vendor url="https://www.yourcompany.com">YourCompany</vendor>
+    <vendor url="https://github.com/seachicken">seito.tanaka</vendor>
 
     <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
     <description><![CDATA[
-        Enter short description for your plugin here.<br>
-        <em>most HTML tags may be used</em>
-        ]]></description>
+        Translate changed Markdown paragraphs on save using the bundled Honnyaku language server.
+        Requires Codex CLI on PATH and an authenticated Codex session.
+    ]]></description>
 
     <!-- Product and plugin compatibility requirements.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
+    <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.lsp</depends>
-
-    <resource-bundle>messages.MyMessageBundle</resource-bundle>
 
     <!-- Extensions defined by the plugin.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
@@ -29,8 +28,9 @@
         <!-- If the plugin is published on JetBrains Marketplace, errors reported by users are available on the plugin page.
              See https://plugins.jetbrains.com/docs/marketplace/error-handler.html#developers-side for details. -->
         <errorHandler implementation="com.intellij.diagnostic.JetBrainsMarketplaceErrorReportSubmitter"/>
-        <toolWindow id="MyToolWindow" factoryClass="honnyaku.MyToolWindowFactory"
-                    icon="AllIcons.Toolwindows.ToolWindowPalette"/>
+        <platform.lsp.serverSupportProvider implementation="honnyaku.LanguageServerProvider"/>
+        <toolWindow id="Honnyaku" factoryClass="honnyaku.HonnyakuToolWindowFactory"
+                    icon="AllIcons.Toolwindows.ToolWindowPalette" anchor="right"/>
     </extensions>
 
 </idea-plugin>

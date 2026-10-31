@@ -18,6 +18,15 @@ dependencyResolutionManagement {
     // Configure all projects' repositories
     repositories {
         mavenCentral()
+        ivy {
+            name = "honnyakuReleases"
+            url = uri("https://github.com/seachicken/honnyaku/releases/download")
+            patternLayout {
+                artifact("v[revision]/[artifact]_[revision]_[classifier].[ext]")
+            }
+            metadataSources { artifact() }
+            content { includeGroup("honnyaku.release") }
+        }
 
         // IntelliJ Platform Gradle Plugin Repositories Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-repositories-extension.html
         intellijPlatform {
