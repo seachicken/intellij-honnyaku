@@ -13,55 +13,21 @@ Manage versions in `gradle.properties`:
 ./gradlew runIde
 ```
 
-Gradle downloads the pinned release archive for the current host and puts its executable,
-README, and license under the sandbox plugin's `bin/` directory. The plugin starts that
-bundled executable over stdio; no separate Honnyaku installation is needed.
-
-To use a local server during development, set the path to an already-built executable
-in the IDE process environment (or in the `runIde` run configuration):
+The plugin uses the bundled Honnyaku server by default. To use a local server,
+set `HONNYAKU_SERVER_PATH` to its executable:
 
 ```sh
 HONNYAKU_SERVER_PATH=/absolute/path/to/honnyaku ./gradlew runIde
 ```
 
-Without `HONNYAKU_SERVER_PATH`, the plugin uses its bundled executable. The plugin
-does not build the server. Distribution builds always bundle the pinned
-`honnyakuVersion`; update it after releasing server changes to ship token usage.
-
-The model selector sends `initializationOptions.model` and requires the server to
-advertise `capabilities.experimental.honnyakuModelCatalog: true`. Release the
-server changes and update `honnyakuVersion` before distributing model selection.
-For local testing, build the updated sibling repository and use its executable:
-
-```sh
-(cd ../honnyaku && go build -o /tmp/honnyaku-model-selection .)
-HONNYAKU_SERVER_PATH=/tmp/honnyaku-model-selection ./gradlew runIde
-```
-
-## Build platform-specific distributions
+## Distribution
 
 ```sh
 ./gradlew buildPluginVariants
 ```
 
-This downloads the six release ZIPs and builds six plugin archives under `build/distributions/`:
-macOS, Linux, and Windows, each for x86_64 and ARM64. Each archive contains only its target's
-executable. Gradle's `nativeVariants` adds OS/architecture dependencies to `plugin.xml` and
-suffixes the version, allowing Marketplace to deliver the matching archive.
-
-To build just one target:
-
-```sh
-./gradlew buildPluginVariants_mac_arm64
-```
-
-Use the variant archives for installation and distribution. The ordinary `buildPlugin`
-archive is platform-independent and does not contain a Honnyaku executable.
-
-`publishPlugin` builds and uploads all configured variants when Marketplace credentials
-are configured. Building does not publish anything.
-
-See [JetBrains' OS/architecture-specific version documentation](https://plugins.jetbrains.com/docs/marketplace/os-architecture-specific-plugin-versions.html).
+Platform-specific plugin archives are written to `build/distributions/`.
+Use these archives for installation and distribution.
 
 ## Publishing
 

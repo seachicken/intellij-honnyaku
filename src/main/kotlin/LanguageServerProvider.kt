@@ -6,6 +6,7 @@ import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.components.service
@@ -23,10 +24,13 @@ import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import java.nio.file.Files
 import java.text.NumberFormat
 import java.util.Locale
+import com.intellij.platform.lsp.api.LspServerState
+import org.eclipse.lsp4j.DidSaveTextDocumentParams
+import org.eclipse.lsp4j.Range
 
 class LanguageServerProvider : LspServerSupportProvider {
     override fun fileOpened(project: Project, file: VirtualFile, serverStarter: LspServerSupportProvider.LspServerStarter) {
-        if (isMarkdown(file)) {
+        if (isProjectMarkdown(project, file)) {
             val sessionController = project.service<TranslationSessionController>()
             sessionController.syncVisibility()
             if (!sessionController.isVisible) return
@@ -35,13 +39,22 @@ class LanguageServerProvider : LspServerSupportProvider {
     }
 }
 
-private fun isMarkdown(file: VirtualFile): Boolean = file.fileType.name.equals("Markdown", ignoreCase = true)
+internal fun isProjectMarkdown(project: Project, file: VirtualFile): Boolean =
+    file.fileType.name.equals("Markdown", ignoreCase = true) &&
+        ProjectFileIndex.getInstance(project).isInContent(file)
 
 private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "Honnyaku") {
     override fun createInitializationOptions(): Any =
-        translationModelOptions(project.service<HonnyakuSettings>().state.model)
+        translationInitializationOptions(project.service<HonnyakuSettings>().state.model,
+            project.service<TranslationHistory>().read())
 
     override val lspServerListener: LspServerListener = object : LspServerListener {
+        override fun serverStopped(shutdownNormally: Boolean) {
+            ApplicationManager.getApplication().invokeLater {
+                if (!project.isDisposed) project.service<HonnyakuSettings>().viewModel.clearActivity()
+            }
+        }
+
         override fun serverInitialized(params: InitializeResult) {
             if (supportsModelCatalog(params.capabilities.experimental)) return
             ApplicationManager.getApplication().invokeLater {
@@ -50,14 +63,14 @@ private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerD
                 project.service<HonnyakuSettings>().viewModel.receiveModelCatalog(TranslationModelCatalog(error = message))
                 LspServerManager.getInstance(project).stopServers(LanguageServerProvider::class.java)
                 NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
-                    .createNotification("Translation model unavailable",
+                    .createNotification("Translation server update required",
                         message,
                         NotificationType.ERROR).notify(project)
             }
         }
     }
 
-    override fun isSupportedFile(file: VirtualFile): Boolean = isMarkdown(file)
+    override fun isSupportedFile(file: VirtualFile): Boolean = isProjectMarkdown(project, file)
 
     override fun startServerProcess(): OSProcessHandler {
         check(project.service<TranslationSessionController>().isVisible) { "Open Honnyaku to enable translation" }
@@ -88,6 +101,17 @@ internal fun supportsModelCatalog(experimental: Any?): Boolean = when (experimen
         it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean
     } == true
     else -> false
+}
+
+/** Initialize the server memory cache from client-persisted results, never from the agent prompt. */
+internal fun translationInitializationOptions(model: String, saved: List<TranslationUpdate>): Map<String, Any> =
+    translationModelOptions(model) + if (saved.isEmpty()) emptyMap() else mapOf("initialTranslations" to saved)
+
+internal fun notifyUnchangedDocumentSaved(project: Project, file: VirtualFile, source: String) {
+    val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
+        .firstOrNull { it.state == LspServerState.Running } ?: return
+    val params = DidSaveTextDocumentParams(server.getDocumentIdentifier(file), source)
+    server.sendNotification { it.textDocumentService.didSave(params) }
 }
 
 class HonnyakuLanguageClient(
@@ -144,9 +168,11 @@ data class TranslationUpdate(
     val targetLanguage: String,
     val translations: List<ParagraphTranslation>,
     val tokenUsage: TranslationTokenUsage? = null,
+    val pending: Boolean = false,
+    val restored: Boolean = false,
 )
 
-data class ParagraphTranslation(val sourceText: String, val text: String?, val error: String?)
+data class ParagraphTranslation(val sourceText: String, val text: String?, val error: String?, val range: Range? = null)
 
 data class ReasoningEffortUpdate(val uri: String, val reasoningEffort: String? = null)
 

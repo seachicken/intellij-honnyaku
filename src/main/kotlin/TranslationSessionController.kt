@@ -7,6 +7,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.platform.lsp.api.LspServerManager
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.components.service
 
 @Service(Service.Level.PROJECT)
 class TranslationSessionController(private val project: Project) : Disposable {
@@ -14,6 +16,9 @@ class TranslationSessionController(private val project: Project) : Disposable {
     private val visibility = TranslationVisibilityGate(
         onShow = { LspServerManager.getInstance(project).startServersIfNeeded(LanguageServerProvider::class.java) },
         onHide = {
+            ApplicationManager.getApplication().invokeLater {
+                if (!project.isDisposed) project.service<HonnyakuSettings>().viewModel.clearActivity()
+            }
             // Cancel inference immediately, including the child Codex process.
             synchronized(processes) {
                 processes.forEach { it.destroyProcess() }
