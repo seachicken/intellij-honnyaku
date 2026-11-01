@@ -3,50 +3,48 @@ package honnyaku
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.service
+import com.intellij.openapi.ui.ComboBox
+import com.intellij.platform.lsp.api.LspServerManager
 import com.intellij.ui.JBColor
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBUI
 import com.intellij.ui.content.ContentFactory
+import java.awt.FlowLayout
 import java.awt.BorderLayout
-import java.awt.BasicStroke
-import java.awt.Color
-import java.awt.Component
-import java.awt.Graphics
-import java.awt.Graphics2D
-import java.awt.RenderingHints
-import javax.swing.Icon
-import javax.swing.BoxLayout
+import javax.swing.ListCellRenderer
+import javax.swing.JLabel
 import javax.swing.JPanel
 
 class HonnyakuToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         toolWindow.contentManager.addContent(
-            ContentFactory.getInstance().createContent(HonnyakuTranslationPanel(project.service<HonnyakuSettings>().viewModel), null, false).apply {
+            ContentFactory.getInstance().createContent(HonnyakuTranslationPanel(
+                project.service<HonnyakuSettings>().viewModel,
+                project.service<HonnyakuSettings>().state,
+            ) {
+                LspServerManager.getInstance(project).stopAndRestartIfNeeded(LanguageServerProvider::class.java)
+            }, null, false).apply {
                 setDisposer(component as HonnyakuTranslationPanel)
             }
         )
+        project.service<TranslationSessionController>().syncVisibility()
     }
 }
 
-class HonnyakuTranslationPanel(private val viewModel: HonnyakuViewModel) : JPanel(BorderLayout()), Disposable {
+class HonnyakuTranslationPanel(
+    private val viewModel: HonnyakuViewModel,
+    modelSettings: HonnyakuSettings.SettingsState,
+    restartServer: () -> Unit,
+) : JPanel(BorderLayout()), Disposable {
     private val unsubscribe: () -> Unit
-    private var usage: TranslationTokenUsage? = null
-    private var expanded = false
-    private val usageDetails = JBLabel().apply {
-        border = JBUI.Borders.emptyTop(6)
-        isVisible = false
-    }
-    private val usageToggle = TokenUsageLink { toggleUsageDetails() }.apply {
-        toolTipText = "Cumulative token usage for this file’s translation thread"
-        border = JBUI.Borders.compound(
-            javax.swing.BorderFactory.createLineBorder(JBColor.border(), 1, true),
-            JBUI.Borders.empty(4, 8),
-        )
+    private val usageLabel = TokenUsageLabel()
+    private val modelSelector = TranslationModelPanel(modelSettings) {
+        viewModel.clearUsage()
+        restartServer()
     }
     private val text = JBTextArea("Edit a Markdown file and save it to translate changed paragraphs into English.").apply {
         isEditable = false
@@ -55,40 +53,26 @@ class HonnyakuTranslationPanel(private val viewModel: HonnyakuViewModel) : JPane
     }
 
     init {
-        add(JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(8, 12)
-            add(usageToggle)
-            add(usageDetails)
-        }, BorderLayout.NORTH)
-        add(JBScrollPane(text), BorderLayout.CENTER)
+        add(JBScrollPane(text).apply { border = JBUI.Borders.empty() }, BorderLayout.CENTER)
+        add(JPanel(BorderLayout(JBUI.scale(12), 0)).apply {
+            border = JBUI.Borders.compound(
+                JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0),
+                JBUI.Borders.empty(6, 10),
+            )
+            add(modelSelector, BorderLayout.WEST)
+            add(usageLabel, BorderLayout.EAST)
+        }, BorderLayout.SOUTH)
         unsubscribe = viewModel.subscribe { refreshSelectedFile() }
         refreshSelectedFile()
     }
 
     override fun dispose() { unsubscribe() }
 
-    private fun toggleUsageDetails() {
-        expanded = !expanded
-        refreshUsage()
-    }
-
-    private fun refreshUsage() {
-        usageToggle.text = usage?.let { "${if (expanded) "▾" else "▸"} Thread: ${it.summary()}" }
-            ?: "Thread tokens: unavailable"
-        usageToggle.icon = TokenUsageIcon(usage)
-        usageToggle.isEnabled = usage != null
-        usageToggle.accessibleContext.accessibleName = "Token usage: ${usage?.summary() ?: "unavailable"}"
-        usageDetails.text = usage?.details()?.let { "<html>${it.replace(" · ", "<br>")}</html>" }.orEmpty()
-        usageDetails.isVisible = expanded && usage != null
-        revalidate()
-        repaint()
-    }
-
     private fun refreshSelectedFile() {
         val uri = viewModel.selectedUri
-        usage = viewModel.usage(uri)
-        refreshUsage()
+        usageLabel.updateUsage(viewModel.usage(uri))
+        modelSelector.updateCatalog(viewModel.modelCatalog)
+        modelSelector.updateReasoningEffort(viewModel.reasoningEffort(uri))
         val update = viewModel.translation(uri)
         text.text = if (update == null) {
             if (uri == null) "Open a Markdown file to see its translation."
@@ -105,39 +89,102 @@ class HonnyakuTranslationPanel(private val viewModel: HonnyakuViewModel) : JPane
     }
 }
 
-internal class TokenUsageLink(onToggle: () -> Unit) : ActionLink("Thread tokens: unavailable", { onToggle() }) {
+internal class TranslationModelPanel(
+    private val settings: HonnyakuSettings.SettingsState,
+    private val onChange: () -> Unit,
+) : JPanel(FlowLayout(FlowLayout.LEADING, 0, 0)) {
+    private var catalog: TranslationModelCatalog? = null
+    private var reasoningEffort: String? = null
+    private var updating = false
+    private val selector = ComboBox(arrayOf(settings.model)).apply { isEnabled = false }
+
     init {
-        // ActionLink otherwise hides itself when usage is not yet available.
-        autoHideOnDisable = false
-        isEnabled = false
+        val standardRenderer = selector.renderer
+        selector.renderer = ListCellRenderer { list, model, index, selected, focused ->
+            val available = availableModel(model)
+            val name = available?.label() ?: when {
+                catalog == null -> "Loading models…"
+                catalog?.error != null -> "Models unavailable"
+                !model.isNullOrEmpty() -> "Unavailable: $model"
+                else -> "No models support low reasoning"
+            }
+            val effort = if (model == settings.model) reasoningEffort ?: available?.let { "low" }
+                else available?.let { "low" }
+            val label = if (index == -1) effort?.let { "$name · $it" } ?: name else name
+            standardRenderer.getListCellRendererComponent(list, name, index, selected, focused).also {
+                if (it is JLabel) it.text = label
+            }
+        }
+        selector.addActionListener {
+            if (!updating) {
+                val model = selector.selectedItem?.toString().orEmpty()
+                if (model != settings.model && availableModel(model) != null) {
+                    settings.model = model
+                    reasoningEffort = null
+                    refreshPresentation()
+                    onChange()
+                }
+            }
+        }
+        add(selector)
+        refreshPresentation()
+    }
+
+    private fun availableModel(id: String?): AvailableTranslationModel? =
+        catalog?.models?.firstOrNull { it.model == id && it.supportsLow() }
+
+    fun updateCatalog(value: TranslationModelCatalog?) {
+        if (catalog == value) return
+        catalog = value
+        val models = value?.models.orEmpty().filter { it.supportsLow() }.distinctBy { it.model }
+        val previous = settings.model
+        val selected = if (previous.isNotEmpty()) previous
+            else (models.firstOrNull { it.isDefault } ?: models.firstOrNull())?.model.orEmpty()
+        updating = true
+        try {
+            selector.removeAllItems()
+            models.forEach { selector.addItem(it.model) }
+            if (selected.isNotEmpty() && models.none { it.model == selected }) selector.addItem(selected)
+            if (selector.itemCount == 0) selector.addItem("")
+            selector.selectedItem = selected
+            selector.isEnabled = models.isNotEmpty()
+            settings.model = selected
+        } finally { updating = false }
+        refreshPresentation()
+        if (selected != previous) onChange()
+    }
+
+    fun updateReasoningEffort(effort: String?) {
+        reasoningEffort = effort?.takeIf { it.isNotBlank() }
+        refreshPresentation()
+    }
+
+    private fun refreshPresentation() {
+        selector.prototypeDisplayValue = null
+        selector.prototypeDisplayValue = (0 until selector.itemCount).map { selector.getItemAt(it) }
+            .maxByOrNull { availableModel(it)?.label()?.length ?: it.length }
+        selector.toolTipText = catalog?.error ?: when {
+            reasoningEffort != null -> "Reasoning: $reasoningEffort · Reported by Codex"
+            availableModel(settings.model) != null -> "Reasoning: low · Supported by Codex and configured for translation"
+            catalog == null -> "Loading available models from Codex"
+            else -> "Select an available model supporting low reasoning"
+        }
+        selector.accessibleContext.accessibleName = "Translation model: ${availableModel(settings.model)?.label() ?: settings.model}"
+        selector.revalidate()
+        selector.repaint()
     }
 }
 
-/** Input/output composition, not a percentage of an invented token budget. */
-private class TokenUsageIcon(private val usage: TranslationTokenUsage?) : Icon {
-    override fun getIconWidth() = JBUI.scale(14)
-    override fun getIconHeight() = JBUI.scale(14)
+internal class TokenUsageLabel : JBLabel() {
+    init {
+        foreground = JBColor.GRAY
+        font = JBUI.Fonts.smallFont()
+        updateUsage(null)
+    }
 
-    override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
-        val graphics = g.create() as Graphics2D
-        try {
-            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            graphics.stroke = BasicStroke(JBUI.scale(2).toFloat())
-            val inset = JBUI.scale(2)
-            val size = iconWidth - inset * 2
-            graphics.color = JBColor.border()
-            graphics.drawOval(x + inset, y + inset, size, size)
-            val input = usage?.inputTokens?.coerceAtLeast(0)?.toDouble() ?: 0.0
-            val output = usage?.outputTokens?.coerceAtLeast(0)?.toDouble() ?: 0.0
-            if (input + output > 0) {
-                val inputAngle = (360 * input / (input + output)).toInt()
-                graphics.color = JBColor(Color(0x3574F0), Color(0x6B9BFA))
-                graphics.drawArc(x + inset, y + inset, size, size, 90, -inputAngle)
-                graphics.color = JBColor(Color(0x26835B), Color(0x59A869))
-                graphics.drawArc(x + inset, y + inset, size, size, 90 - inputAngle, -(360 - inputAngle))
-            }
-        } finally {
-            graphics.dispose()
-        }
+    fun updateUsage(usage: TranslationTokenUsage?) {
+        text = "Total: ${usage?.summary() ?: "— tokens"}"
+        toolTipText = usage?.let { "File thread · ${it.details()}" } ?: "No token usage yet"
+        getAccessibleContext().accessibleName = "Total token usage: ${usage?.summary() ?: "unavailable"}"
     }
 }

@@ -4,6 +4,31 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HonnyakuViewModelTest {
+    @Test
+    fun `catalog remains available when switching models clears runtime usage`() {
+        val model = HonnyakuViewModel()
+        val catalog = TranslationModelCatalog(listOf(AvailableTranslationModel("a", supportedReasoningEfforts = listOf(ReasoningEffortOption("low")))))
+        model.receiveModelCatalog(catalog)
+        model.receiveReasoningEffort(ReasoningEffortUpdate(a, "low"))
+        model.clearUsage()
+        assertEquals(catalog, model.modelCatalog)
+        assertNull(model.reasoningEffort(a))
+    }
+
+    @Test
+    fun `reasoning displays reported values per file and becomes unknown after reset`() {
+        val model = HonnyakuViewModel()
+        assertNull(model.reasoningEffort(a))
+        model.receiveReasoningEffort(ReasoningEffortUpdate(a, "medium"))
+        model.receiveReasoningEffort(ReasoningEffortUpdate(b, "low"))
+        assertEquals("medium", model.reasoningEffort("file:/a.md"))
+        assertEquals("low", model.reasoningEffort(b))
+        model.receiveReasoningEffort(ReasoningEffortUpdate(a))
+        assertNull(model.reasoningEffort(a))
+        model.clearUsage()
+        assertNull(model.reasoningEffort(b))
+    }
+
     private val a = "file:///a.md"
     private val b = "file:///b.md"
     private fun translation(uri: String, text: String = "translated") =

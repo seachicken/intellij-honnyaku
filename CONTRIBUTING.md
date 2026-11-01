@@ -28,6 +28,16 @@ Without `HONNYAKU_SERVER_PATH`, the plugin uses its bundled executable. The plug
 does not build the server. Distribution builds always bundle the pinned
 `honnyakuVersion`; update it after releasing server changes to ship token usage.
 
+The model selector sends `initializationOptions.model` and requires the server to
+advertise `capabilities.experimental.honnyakuModelCatalog: true`. Release the
+server changes and update `honnyakuVersion` before distributing model selection.
+For local testing, build the updated sibling repository and use its executable:
+
+```sh
+(cd ../honnyaku && go build -o /tmp/honnyaku-model-selection .)
+HONNYAKU_SERVER_PATH=/tmp/honnyaku-model-selection ./gradlew runIde
+```
+
 ## Build platform-specific distributions
 
 ```sh

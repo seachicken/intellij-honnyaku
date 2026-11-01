@@ -25,12 +25,13 @@
     <!-- Extensions defined by the plugin.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Honnyaku" displayType="BALLOON"/>
         <!-- If the plugin is published on JetBrains Marketplace, errors reported by users are available on the plugin page.
              See https://plugins.jetbrains.com/docs/marketplace/error-handler.html#developers-side for details. -->
         <errorHandler implementation="com.intellij.diagnostic.JetBrainsMarketplaceErrorReportSubmitter"/>
         <platform.lsp.serverSupportProvider implementation="honnyaku.LanguageServerProvider"/>
         <toolWindow id="Honnyaku" factoryClass="honnyaku.HonnyakuToolWindowFactory"
-                    icon="AllIcons.Toolwindows.ToolWindowPalette" anchor="right"/>
+                    icon="AllIcons.General.Language" anchor="right"/>
     </extensions>
 
 </idea-plugin>
