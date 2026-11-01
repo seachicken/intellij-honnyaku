@@ -9,7 +9,6 @@ abstract class ArchiveAccess {
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
-    id("org.jetbrains.changelog")
     id("org.jetbrains.intellij.platform")
 }
 
@@ -57,6 +56,15 @@ intellijPlatform {
         channels = listOf(version.toString().substringAfter('-', "").substringBefore('.').ifEmpty { "default" })
     }
     pluginConfiguration.ideaVersion.sinceBuild = "261"
+    pluginConfiguration.changeNotes = """
+        <h2>Features</h2>
+        <ul>
+            <li>Translate Markdown into English on save while the Honnyaku tool window is open</li>
+            <li>View translations alongside the source with synchronized scrolling and persistent results</li>
+            <li>Select a translation model and view reasoning effort, translation progress, and token usage</li>
+            <li>Stop translation automatically when the tool window is hidden</li>
+        </ul>
+    """.trimIndent()
     nativeVariants {
         enabled = true
         linux.x86_64.from(nativeFiles.getValue("linux" to "x86_64"))
