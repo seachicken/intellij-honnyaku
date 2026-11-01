@@ -11,6 +11,8 @@ permissions:
 jobs:
   publish-plugin:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -36,3 +38,14 @@ jobs:
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: ./gradlew --no-daemon publishPlugin -PpluginVersion="$VERSION"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          args=(--title "$RELEASE_TAG" --generate-notes --verify-tag)
+          if [[ "$RELEASE_TAG" == *beta* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${args[@]}"
