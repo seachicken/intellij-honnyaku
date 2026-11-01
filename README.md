@@ -9,6 +9,5 @@ The plugin uses the IntelliJ Platform built-in LSP API and bundles [Honnyaku](ht
 - An IDE distribution with the built-in LSP module (`com.intellij.modules.lsp`).
 - Codex CLI installed on the IDE process's PATH and authenticated.
 
-Open a Markdown file, edit a paragraph, and save. The server translates changed paragraphs
-into English. Opening an unchanged file does not trigger translation. The tool window
-shows the latest update, rather than a complete translated copy of the file.
+Open a Markdown file, edit it, and save to translate changed paragraphs into English.
+View translations and token usage in the Honnyaku tool window.

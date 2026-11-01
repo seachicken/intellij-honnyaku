@@ -17,6 +17,17 @@ Gradle downloads the pinned release archive for the current host and puts its ex
 README, and license under the sandbox plugin's `bin/` directory. The plugin starts that
 bundled executable over stdio; no separate Honnyaku installation is needed.
 
+To use a local server during development, set the path to an already-built executable
+in the IDE process environment (or in the `runIde` run configuration):
+
+```sh
+HONNYAKU_SERVER_PATH=/absolute/path/to/honnyaku ./gradlew runIde
+```
+
+Without `HONNYAKU_SERVER_PATH`, the plugin uses its bundled executable. The plugin
+does not build the server. Distribution builds always bundle the pinned
+`honnyakuVersion`; update it after releasing server changes to ship token usage.
+
 ## Build platform-specific distributions
 
 ```sh
