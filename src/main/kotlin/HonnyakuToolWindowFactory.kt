@@ -68,13 +68,13 @@ class HonnyakuToolWindowFactory : ToolWindowFactory {
 class HonnyakuTranslationPanel(
     private val project: Project,
     private val viewModel: HonnyakuViewModel,
-    modelSettings: HonnyakuSettings.SettingsState,
-    restartServer: () -> Unit,
+    private val modelSettings: HonnyakuSettings.SettingsState,
+    private val restartServer: () -> Unit,
 ) : JPanel(BorderLayout()), Disposable {
     private val unsubscribe: () -> Unit
     private val usageLabel = TokenUsageLabel()
     private val modelSelector = TranslationModelPanel(modelSettings) {
-        viewModel.clearUsage()
+        viewModel.resetRuntimeState()
         restartServer()
     }
     private val viewer = EditorFactory.getInstance().createViewer(
@@ -94,10 +94,20 @@ class HonnyakuTranslationPanel(
     private var displayedUri: String? = null
     private var disposed = false
     private var refreshPending = false
+    private var activeLanguage: String? = null
+    private var syncingScroll = false
+    private var previewScrolledManually = false
+    private val languagePanel = TranslationLanguagePanel(modelSettings) { refreshSelectedFile() }
+    private val topScrollSpace = viewer.inlayModel.addBlockElement(0, true, true, 0,
+        object : com.intellij.openapi.editor.EditorCustomElementRenderer {
+            override fun calcWidthInPixels(inlay: com.intellij.openapi.editor.Inlay<*>) = 1
+            override fun calcHeightInPixels(inlay: com.intellij.openapi.editor.Inlay<*>) = languagePanel.height.coerceAtLeast(1)
+        })
 
     init {
         viewer.contentComponent.accessibleContext.accessibleName = "Translated document"
         add(viewer.component, BorderLayout.CENTER)
+        add(languagePanel, BorderLayout.NORTH)
         add(JPanel(BorderLayout(JBUI.scale(12), 0)).apply {
             border = JBUI.Borders.compound(
                 JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0),
@@ -110,9 +120,22 @@ class HonnyakuTranslationPanel(
         unsubscribe = viewModel.subscribe { refreshSelectedFile() }
         EditorFactory.getInstance().eventMulticaster.addVisibleAreaListener(object : VisibleAreaListener {
             override fun visibleAreaChanged(event: VisibleAreaEvent) {
+                if (disposed || project.isDisposed) return
+                if (event.editor === viewer) {
+                    if (!syncingScroll && event.oldRectangle?.y != event.newRectangle.y) previewScrolledManually = true
+                    return
+                }
                 syncWithEditor(event.editor)
             }
         }, this)
+        viewer.component.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(event: java.awt.event.ComponentEvent) {
+                if (!disposed && !project.isDisposed) {
+                    topScrollSpace?.update()
+                    if (!previewScrolledManually) FileEditorManager.getInstance(project).selectedTextEditor?.let { syncWithEditor(it) }
+                }
+            }
+        })
         (EditorFactory.getInstance().eventMulticaster as EditorEventMulticasterEx)
             .addPropertyChangeListener({ event ->
                 if (event.propertyName == EditorEx.PROP_FONT_SIZE ||
@@ -163,7 +186,7 @@ class HonnyakuTranslationPanel(
     private fun refreshSelectedFile() {
         if (disposed || project.isDisposed) return
         val uri = viewModel.selectedUri
-        usageLabel.updateUsage(viewModel.usage(uri))
+        usageLabel.updateUsage(viewModel.usage(uri), viewModel.usageSessions(uri))
         modelSelector.updateCatalog(viewModel.modelCatalog)
         modelSelector.updateReasoningEffort(viewModel.reasoningEffort(uri))
         val editor = FileEditorManager.getInstance(project).selectedTextEditor
@@ -173,6 +196,7 @@ class HonnyakuTranslationPanel(
         }
         sourceDocument = editor?.document ?: file?.let { FileDocumentManager.getInstance().getDocument(it) }
         if (uri != displayedUri) {
+            previewScrolledManually = false
             displayedUri = uri
             if (file != null) {
                 (viewer as EditorEx).highlighter = EditorHighlighterFactory.getInstance()
@@ -190,21 +214,31 @@ class HonnyakuTranslationPanel(
             viewer.settings.isRightMarginShown = editor.settings.isRightMarginShown
             viewer.settings.isFoldingOutlineShown = false
         }
-        projection = translationDocument(sourceDocument?.text.orEmpty(), viewModel.history(uri))
+        val language = modelSettings.previewLanguage(sourceDocument?.text.orEmpty())
+        val previousLanguage = activeLanguage
+        activeLanguage = language
+        languagePanel.updateTarget(modelSettings.resolvedTarget(sourceDocument?.text.orEmpty()))
+        if (previousLanguage != null && previousLanguage != language) {
+            viewModel.resetRuntimeState()
+            restartServer()
+        }
+        projection = translationDocument(sourceDocument?.text.orEmpty(), viewModel.history(uri).filter {
+            it.targetLanguage == language
+        })
         updateViewerText(projection.text)
         val source = sourceDocument?.text.orEmpty()
         loadingDecoration.update(viewModel.pendingBlocks(uri, source).map {
             projection.displayOffset(it.start) to projection.displayOffset(it.end)
         })
         val pending = viewModel.pendingCount(uri)
-        val errors = viewModel.translation(uri)?.translations.orEmpty().mapNotNull { it.error }
+        val errors = viewModel.translation(uri)?.takeIf { it.targetLanguage == language }?.translations.orEmpty().mapNotNull { it.error }
         loadingStatus.isVisible = pending > 0 || errors.isNotEmpty()
         loadingIcon.isVisible = pending > 0
         if (pending > 0 && isShowing) loadingIcon.resume() else loadingIcon.suspend()
         loadingLabel.text = if (pending > 0) "Translating $pending line${if (pending == 1) "" else "s"}…"
             else "Translation failed · Original text retained"
         loadingLabel.toolTipText = if (pending > 0) "Saved lines are waiting for translation results" else errors.joinToString("\n")
-        if (editor != null) syncWithEditor(editor)
+        if (editor != null && !previewScrolledManually) syncWithEditor(editor)
     }
 
     private fun updateViewerText(value: String) {
@@ -232,15 +266,26 @@ class HonnyakuTranslationPanel(
             editor !== FileEditorManager.getInstance(project).selectedTextEditor ||
             editor.document !== sourceDocument) return
         syncFontSize(editor)
-        val visible = editor.scrollingModel.visibleArea
-        val offset = editor.logicalPositionToOffset(editor.xyToLogicalPosition(Point(0, visible.y)))
+        previewScrolledManually = false
+        // Match the line at the preview viewport's physical top, including variable-height headers.
+        val sourceY = SwingUtilities.convertPoint(
+            viewer.contentComponent, Point(0, viewer.scrollingModel.visibleArea.y), editor.contentComponent,
+        ).y
+        val offset = editor.logicalPositionToOffset(editor.xyToLogicalPosition(Point(0, sourceY)))
         val target = projection.displayOffset(offset).coerceIn(0, viewer.document.textLength)
-        val withinLine = visible.y - editor.offsetToXY(offset).y
+        val withinLine = sourceY - editor.offsetToXY(offset).y
         val y = viewer.offsetToXY(target).y + withinLine * viewer.lineHeight / editor.lineHeight.coerceAtLeast(1)
         viewer.scrollingModel.disableAnimation()
+        syncingScroll = true
         try {
+            // Even a one-line document needs enough scroll range to compensate for the header
+            // and the block above its first line. Keep that range as editor padding, not text.
+            viewer.settings.isAdditionalPageAtBottom = true
+            viewer.settings.additionalLinesCount =
+                (viewer.scrollingModel.visibleArea.height + languagePanel.height * 2) / viewer.lineHeight.coerceAtLeast(1) + 1
             viewer.scrollingModel.scrollVertically(y.coerceAtLeast(0))
         } finally {
+            syncingScroll = false
             viewer.scrollingModel.enableAnimation()
         }
     }
@@ -254,6 +299,87 @@ class HonnyakuTranslationPanel(
     }
 }
 
+internal val translationLanguages = arrayOf("Japanese", "English", "Chinese", "Korean", "French", "German", "Spanish", "Portuguese", "Italian", "Russian", "Arabic")
+
+/** Script detection deliberately falls back to English for ambiguous Latin text. */
+internal fun automaticTargetLanguage(source: String, preferred: String): String {
+    val scripts = source.codePoints().toArray().map { Character.UnicodeScript.of(it) }
+    val candidates = listOf(
+        "Japanese" to scripts.count { it == Character.UnicodeScript.HIRAGANA || it == Character.UnicodeScript.KATAKANA },
+        "Korean" to scripts.count { it == Character.UnicodeScript.HANGUL },
+        "Chinese" to scripts.count { it == Character.UnicodeScript.HAN },
+        "Russian" to scripts.count { it == Character.UnicodeScript.CYRILLIC },
+        "Arabic" to scripts.count { it == Character.UnicodeScript.ARABIC },
+    )
+    // Kanji in Japanese should not turn a Japanese author's document into a Chinese target.
+    val japanese = candidates.first().second > 0
+    return candidates.filter { it.first != preferred && it.second > 0 && !(japanese && it.first == "Chinese") }
+        .maxByOrNull { it.second }?.first ?: "English"
+}
+
+internal fun HonnyakuSettings.SettingsState.resolvedTarget(source: String): String =
+    if (targetLanguage == "Auto") automaticTargetLanguage(source, preferredLanguage) else targetLanguage
+
+internal fun HonnyakuSettings.SettingsState.previewLanguage(source: String): String =
+    if (previewPreferred) preferredLanguage else resolvedTarget(source)
+
+
+internal class TranslationLanguagePanel(
+    private val settings: HonnyakuSettings.SettingsState,
+    onChange: () -> Unit,
+) : JPanel(FlowLayout(FlowLayout.LEADING, JBUI.scale(6), JBUI.scale(6))) {
+    private val target = ComboBox(arrayOf("Auto") + translationLanguages)
+    private val preview = ComboBox<String>()
+    private var updatingPreview = false
+
+    init {
+        val preferred = ComboBox(translationLanguages)
+        preferred.selectedItem = settings.preferredLanguage
+        target.selectedItem = settings.targetLanguage
+        preferred.accessibleContext.accessibleName = "Preferred language"
+        target.accessibleContext.accessibleName = "Translation target language"
+        target.toolTipText = "Auto: detect a different script in the document; ambiguous text defaults to English. Choose Latin languages explicitly."
+        add(JBLabel("Preferred"))
+        add(preferred)
+        add(JBLabel("Target"))
+        add(target)
+        add(JBLabel("Preview"))
+        preview.accessibleContext.accessibleName = "Preview language"
+        add(preview)
+        preferred.addActionListener {
+            settings.preferredLanguage = preferred.selectedItem as String
+            onChange()
+        }
+        target.addActionListener {
+            settings.targetLanguage = target.selectedItem as String
+            onChange()
+        }
+        preview.addActionListener {
+            if (!updatingPreview) {
+                val usePreferred = preview.selectedItem == settings.preferredLanguage
+                if (usePreferred != settings.previewPreferred) {
+                    settings.previewPreferred = usePreferred
+                    onChange()
+                }
+            }
+        }
+    }
+
+    fun updateTarget(language: String) {
+        val options = listOf(settings.preferredLanguage, language).distinct()
+        updatingPreview = true
+        try {
+            if ((0 until preview.itemCount).map { preview.getItemAt(it) } != options) {
+                preview.removeAllItems()
+                options.forEach { preview.addItem(it) }
+            }
+            preview.selectedItem = if (settings.previewPreferred) settings.preferredLanguage else language
+            preview.isEnabled = options.size > 1
+            preview.toolTipText = "Choose the preview language" +
+                if (settings.targetLanguage == "Auto") " · Auto target: $language" else ""
+        } finally { updatingPreview = false }
+    }
+}
 
 internal class TranslationModelPanel(
     private val settings: HonnyakuSettings.SettingsState,
@@ -342,16 +468,65 @@ internal class TranslationModelPanel(
 }
 
 internal class TokenUsageLabel : JBLabel() {
+    private var sessions: List<TranslationUsageSession> = emptyList()
+    private var hovered = false
     init {
         foreground = JBColor.GRAY
         font = JBUI.Fonts.smallFont()
+        cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+        addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseEntered(event: java.awt.event.MouseEvent) {
+                hovered = true
+                updateInteraction()
+            }
+
+            override fun mouseExited(event: java.awt.event.MouseEvent) {
+                hovered = false
+                updateInteraction()
+            }
+
+            override fun mouseClicked(event: java.awt.event.MouseEvent) {
+                if (sessions.isEmpty()) return
+                val dateFormat = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                    .withZone(java.time.ZoneId.systemDefault())
+                val rows = sessions.sortedByDescending { it.startedAt }.map { session ->
+                    val usage = session.usage
+                    arrayOf<Any>(dateFormat.format(java.time.Instant.ofEpochMilli(session.startedAt)),
+                        session.targetLanguage.ifBlank { "Unknown" }, session.model.ifBlank { "Default" },
+                        usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, usage.totalTokens)
+                }.toTypedArray()
+                val table = com.intellij.ui.table.JBTable(object : javax.swing.table.DefaultTableModel(
+                    rows, arrayOf("Started", "Target", "Model", "Input", "Cached input", "Output", "Total"),
+                ) {
+                    override fun isCellEditable(row: Int, column: Int) = false
+                })
+                val content = com.intellij.ui.components.JBScrollPane(table).apply {
+                    preferredSize = JBUI.size(850, 240)
+                }
+                com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+                    .createComponentPopupBuilder(content, table).setTitle("Translation sessions · This file")
+                    .setResizable(true).setMovable(true).setRequestFocus(true).createPopup()
+                    .showUnderneathOf(this@TokenUsageLabel)
+            }
+        })
         updateUsage(null)
     }
 
-    fun updateUsage(usage: TranslationTokenUsage?) {
+    fun updateUsage(usage: TranslationTokenUsage?, sessions: List<TranslationUsageSession> = emptyList()) {
+        this.sessions = sessions
         text = "Total: ${usage?.summary() ?: "— tokens"}"
-        toolTipText = usage?.let { "File thread · ${it.details()}" } ?: "No token usage yet"
+        toolTipText = usage?.let { "File total · ${sessions.size} sessions · ${it.details()} · Click to view sessions" } ?: "No token usage yet"
         getAccessibleContext().accessibleName = "Total token usage: ${usage?.summary() ?: "unavailable"}"
+        updateInteraction()
+    }
+
+    private fun updateInteraction() {
+        val clickable = sessions.isNotEmpty()
+        val highlighted = clickable && hovered
+        foreground = if (highlighted) JBUI.CurrentTheme.Label.foreground() else JBColor.GRAY
+        cursor = java.awt.Cursor.getPredefinedCursor(
+            if (clickable) java.awt.Cursor.HAND_CURSOR else java.awt.Cursor.DEFAULT_CURSOR,
+        )
     }
 }
 

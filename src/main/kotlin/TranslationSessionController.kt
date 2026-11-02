@@ -9,6 +9,12 @@ import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.platform.lsp.api.LspServerManager
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.platform.lsp.api.LspServer
+import com.intellij.platform.lsp.api.LspServerManagerListener
+import org.eclipse.lsp4j.DidSaveTextDocumentParams
 
 @Service(Service.Level.PROJECT)
 class TranslationSessionController(private val project: Project) : Disposable {
@@ -32,6 +38,20 @@ class TranslationSessionController(private val project: Project) : Disposable {
     val isVisible: Boolean get() = visibility.isVisible
 
     init {
+        LspServerManager.getInstance(project).addLspServerManagerListener(object : LspServerManagerListener {
+            override fun fileOpened(lspServer: LspServer, file: VirtualFile) {
+                if (lspServer.providerClass != LanguageServerProvider::class.java) return
+                // didSave is ignored by Honnyaku until didOpen has registered the document.
+                // Use this server's open event rather than racing serverInitialized/restart.
+                ApplicationManager.getApplication().invokeLater {
+                    if (project.isDisposed || !isVisible || !isProjectMarkdown(project, file)) return@invokeLater
+                    if (FileEditorManager.getInstance(project).selectedFiles.firstOrNull() != file) return@invokeLater
+                    val document = FileDocumentManager.getInstance().getDocument(file) ?: return@invokeLater
+                    val params = DidSaveTextDocumentParams(lspServer.getDocumentIdentifier(file), document.text)
+                    lspServer.sendNotification { it.textDocumentService.didSave(params) }
+                }
+            }
+        }, this)
         project.messageBus.connect(this).subscribe(ToolWindowManagerListener.TOPIC,
             object : ToolWindowManagerListener {
                 override fun stateChanged(toolWindowManager: ToolWindowManager) { syncVisibility() }

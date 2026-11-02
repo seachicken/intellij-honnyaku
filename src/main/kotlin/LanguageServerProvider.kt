@@ -45,8 +45,12 @@ internal fun isProjectMarkdown(project: Project, file: VirtualFile): Boolean =
 
 private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "Honnyaku") {
     override fun createInitializationOptions(): Any =
-        translationInitializationOptions(project.service<HonnyakuSettings>().state.model,
-            project.service<TranslationHistory>().read())
+        translationInitializationOptions(
+            project.service<HonnyakuSettings>().state.model,
+            project.service<TranslationHistory>().read(),
+            project.service<HonnyakuSettings>().state.previewLanguage(
+                com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).selectedTextEditor?.document?.text.orEmpty()),
+        )
 
     override val lspServerListener: LspServerListener = object : LspServerListener {
         override fun serverStopped(shutdownNormally: Boolean) {
@@ -104,8 +108,13 @@ internal fun supportsModelCatalog(experimental: Any?): Boolean = when (experimen
 }
 
 /** Initialize the server memory cache from client-persisted results, never from the agent prompt. */
-internal fun translationInitializationOptions(model: String, saved: List<TranslationUpdate>): Map<String, Any> =
-    translationModelOptions(model) + if (saved.isEmpty()) emptyMap() else mapOf("initialTranslations" to saved)
+internal fun translationInitializationOptions(
+    model: String,
+    saved: List<TranslationUpdate>,
+    targetLanguage: String? = null,
+): Map<String, Any> = translationModelOptions(model) +
+    (if (saved.isEmpty()) emptyMap() else mapOf("initialTranslations" to saved)) +
+    (targetLanguage?.let { mapOf("targetLanguage" to it) } ?: emptyMap())
 
 internal fun notifyUnchangedDocumentSaved(project: Project, file: VirtualFile, source: String) {
     val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
@@ -118,11 +127,15 @@ class HonnyakuLanguageClient(
     private val project: Project,
     handler: LspServerNotificationsHandler,
 ) : Lsp4jClient(handler) {
+    private val usageSessionId = java.util.UUID.randomUUID().toString()
     init {
         ApplicationManager.getApplication().invokeLater {
             if (!project.isDisposed) {
                 val viewModel = project.service<HonnyakuSettings>().viewModel
-                viewModel.clearUsage()
+                viewModel.resetRuntimeState()
+                val settings = project.service<HonnyakuSettings>().state
+                val source = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).selectedTextEditor?.document?.text.orEmpty()
+                viewModel.beginUsageSession(usageSessionId, settings.model, settings.previewLanguage(source))
             }
         }
     }
@@ -131,7 +144,7 @@ class HonnyakuLanguageClient(
     fun tokenUsage(update: TokenUsageUpdate) {
         ApplicationManager.getApplication().invokeLater {
             if (project.isDisposed) return@invokeLater
-            project.service<HonnyakuSettings>().viewModel.receiveUsage(update)
+            project.service<HonnyakuSettings>().viewModel.receiveUsage(update, usageSessionId)
         }
     }
 
@@ -156,7 +169,7 @@ class HonnyakuLanguageClient(
         ApplicationManager.getApplication().invokeLater {
             if (project.isDisposed) return@invokeLater
             val viewModel = project.service<HonnyakuSettings>().viewModel
-            viewModel.receiveTranslation(update)
+            viewModel.receiveTranslation(update, usageSessionId)
         }
     }
 

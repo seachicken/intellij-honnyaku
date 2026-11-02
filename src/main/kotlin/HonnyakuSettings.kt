@@ -23,20 +23,27 @@ import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.VfsUtilCore
-import java.net.URI
 
 @Service(Service.Level.PROJECT)
-// Preserve the stored component name so existing model selections continue to load.
-@State(name = "HonnyakuTranslationModel", storages = [Storage("honnyaku.xml")])
+// Translation preferences are personal to this project's local workspace.
+@State(name = "HonnyakuTranslationModel", storages = [Storage(StoragePathMacros.WORKSPACE_FILE)])
 class HonnyakuSettings(private val project: Project) : PersistentStateComponent<HonnyakuSettings.SettingsState>, Disposable {
-    data class SettingsState(var model: String = "")
+    data class SettingsState(
+        var model: String = "",
+        var preferredLanguage: String = "Japanese",
+        var targetLanguage: String = "Auto",
+        var previewPreferred: Boolean = false,
+    )
     private var settingsState = SettingsState()
     override fun getState(): SettingsState = settingsState
-    override fun loadState(state: SettingsState) { settingsState = SettingsState(state.model.trim()) }
+    override fun loadState(state: SettingsState) { settingsState = state.copy(model = state.model.trim()) }
 
+    private val history = project.service<TranslationHistory>()
     val viewModel = HonnyakuViewModel(
-        project.service<TranslationHistory>().read(),
-        { project.service<TranslationHistory>().save(it) },
+        history.read(),
+        history::save,
+        history.readUsage(),
+        history::saveUsage,
     ).apply { selectedFileUri()?.let { selectedUri = it } }
 
     init {
@@ -75,110 +82,24 @@ class HonnyakuSettings(private val project: Project) : PersistentStateComponent<
 internal fun translationModelOptions(model: String): Map<String, String> =
     model.trim().takeIf { it.isNotEmpty() }?.let { mapOf("model" to it) } ?: emptyMap()
 
-/** Project-local persistence; the server receives these results as its initial in-memory state. */
+/** Project-local translation cache and usage history. Only translation results seed the server cache. */
 @Service(Service.Level.PROJECT)
 @State(name = "HonnyakuTranslationHistory", storages = [Storage(StoragePathMacros.WORKSPACE_FILE)])
 class TranslationHistory : PersistentStateComponent<TranslationHistory.HistoryState> {
-    data class HistoryState(var results: String = "[]")
+    data class HistoryState(var results: String = "[]", var sessions: String = "[]")
     @Volatile private var historyState = HistoryState()
     override fun getState() = historyState
     override fun loadState(state: HistoryState) { historyState = state }
-    fun save(results: List<TranslationUpdate>) { historyState = HistoryState(Gson().toJson(results)) }
+    fun save(results: List<TranslationUpdate>) { historyState = historyState.copy(results = Gson().toJson(results)) }
     fun read(): List<TranslationUpdate> = runCatching {
         Gson().fromJson(historyState.results, Array<TranslationUpdate>::class.java)?.toList().orEmpty()
     }.getOrDefault(emptyList())
-}
-
-class HonnyakuViewModel(
-    restored: List<TranslationUpdate> = emptyList(),
-    private val saveHistory: (List<TranslationUpdate>) -> Unit = {},
-) : Disposable {
-    private val translations = mutableMapOf<URI, TranslationUpdate>()
-    private val activity = TranslationActivity()
-    private val history = restored.toMutableList()
-    init { restored.forEach { translations[key(it.uri)] = it } }
-    private val usages = mutableMapOf<URI, TranslationTokenUsage>()
-    private val reasoningEfforts = mutableMapOf<URI, String>()
-    var modelCatalog: TranslationModelCatalog? = null
-        private set
-    private val listeners = mutableListOf<() -> Unit>()
-    private var pendingUsage: TranslationTokenUsage? = null
-    var selectedUri: String? = restored.lastOrNull()?.uri
-        set(value) {
-            if (field == value) return
-            field = value
-            changed()
-        }
-
-    fun translation(uri: String?): TranslationUpdate? = uri?.let { translations[key(it)] }
-    fun history(uri: String?): List<TranslationUpdate> =
-        if (uri == null) emptyList() else history.filter { key(it.uri) == key(uri) }
-    fun usage(uri: String?): TranslationTokenUsage? = uri?.let { usages[key(it)] }
-    fun reasoningEffort(uri: String?): String? = uri?.let { reasoningEfforts[key(it)] }
-    internal fun pendingBlocks(uri: String?, source: String): List<SourceBlock> =
-        uri?.let { activity.pending(key(it).toString(), source) }.orEmpty()
-    fun pendingCount(uri: String?): Int = uri?.let { activity.count(key(it).toString()) } ?: 0
-    fun clearActivity() { activity.clear(); changed() }
-
-    fun receiveModelCatalog(catalog: TranslationModelCatalog) {
-        modelCatalog = catalog
-        changed()
+    fun saveUsage(sessions: List<TranslationUsageSession>) {
+        historyState = historyState.copy(sessions = Gson().toJson(sessions))
     }
-
-    fun receiveReasoningEffort(update: ReasoningEffortUpdate) {
-        val uri = key(update.uri)
-        if (update.reasoningEffort.isNullOrBlank()) reasoningEfforts.remove(uri)
-        else reasoningEfforts[uri] = update.reasoningEffort
-        changed()
-    }
-
-    fun receiveTranslation(update: TranslationUpdate) {
-        if (update.pending) {
-            activity.started(key(update.uri).toString(), update.version, update.translations)
-            changed()
-            return
-        }
-        if (!update.restored) activity.completed(key(update.uri).toString(), update.version)
-        if (update.translations.isNotEmpty()) {
-            val previous = translation(update.uri)
-            translations[key(update.uri)] = update
-            if (previous?.translations != update.translations || previous.targetLanguage != update.targetLanguage) {
-                history.add(update)
-                saveHistory(history.toList())
-            }
-        }
-        (pendingUsage ?: update.tokenUsage)?.let { usages[key(update.uri)] = it }
-        pendingUsage = null
-        changed()
-    }
-
-    fun receiveUsage(update: TokenUsageUpdate) {
-        if (update.uri == null) {
-            // The sequential server supplies the file URI in its next translation result.
-            // Notifications contain cumulative totals, so retain only the latest value.
-            pendingUsage = update.usage()
-        } else {
-            usages[key(update.uri)] = update.usage()
-            changed()
-        }
-    }
-
-    fun clearUsage() {
-        activity.clear()
-        pendingUsage = null
-        usages.clear()
-        reasoningEfforts.clear()
-        changed()
-    }
-
-    fun subscribe(listener: () -> Unit): () -> Unit {
-        listeners.add(listener)
-        return { listeners.remove(listener) }
-    }
-
-    private fun key(uri: String): URI = URI(uri).normalize()
-    private fun changed() { listeners.toList().forEach { it() } }
-    override fun dispose() { listeners.clear() }
+    fun readUsage(): List<TranslationUsageSession> = runCatching {
+        Gson().fromJson(historyState.sessions, Array<TranslationUsageSession>::class.java)?.toList().orEmpty()
+    }.getOrDefault(emptyList())
 }
 
 /** Also catch explicit saves which IntelliJ omits from its normal changed-document notifications. */
@@ -208,46 +129,6 @@ internal class TranslationSaveListener(
             if (result.isPerformed && document != null && !FileDocumentManager.getInstance().isDocumentUnsaved(document)) queueSave(document)
         }
     }
-}
-
-internal data class SourceBlock(val start: Int, val end: Int, val text: String)
-
-internal fun sourceBlocks(source: String): List<SourceBlock> = buildList {
-    var offset = 0
-    source.split('\n').forEach { line ->
-        if (line.isNotBlank()) add(SourceBlock(offset, offset + line.length, line))
-        offset += line.length + 1
-    }
-}
-
-/** The server reports active work; the client only maps it onto the current editor contents. */
-internal class TranslationActivity {
-    private data class Pending(val version: Int, val lines: List<ParagraphTranslation>)
-    private val pending = mutableMapOf<URI, Pending>()
-
-    fun started(uri: String, version: Int, lines: List<ParagraphTranslation>) {
-        pending[URI(uri).normalize()] = Pending(version, lines)
-    }
-
-    fun completed(uri: String, version: Int) {
-        val key = URI(uri).normalize()
-        if ((pending[key]?.version ?: return) <= version) pending.remove(key)
-    }
-
-    fun pending(uri: String, source: String): List<SourceBlock> {
-        val candidates = sourceBlocks(source)
-        val matched = mutableListOf<SourceBlock>()
-        pending[URI(uri).normalize()]?.lines.orEmpty().forEach { line ->
-            candidates.filter { it.text == line.sourceText && it !in matched }
-                .minByOrNull { block ->
-                    kotlin.math.abs(source.take(block.start).count { it == '\n' } - (line.range?.start?.line ?: 0))
-                }?.let { matched.add(it) }
-        }
-        return matched.sortedBy { it.start }
-    }
-
-    fun count(uri: String): Int = pending[URI(uri).normalize()]?.lines?.size ?: 0
-    fun clear() { pending.clear() }
 }
 
 internal data class TranslationTextRange(
