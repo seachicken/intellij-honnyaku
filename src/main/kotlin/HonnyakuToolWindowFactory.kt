@@ -6,10 +6,12 @@ import com.intellij.openapi.command.CommandProcessor
 import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.event.VisibleAreaEvent
 import com.intellij.openapi.editor.event.VisibleAreaListener
+import com.intellij.openapi.editor.ex.EditorEventMulticasterEx
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
 import com.intellij.openapi.editor.markup.CustomHighlighterRenderer
@@ -111,6 +113,20 @@ class HonnyakuTranslationPanel(
                 syncWithEditor(event.editor)
             }
         }, this)
+        (EditorFactory.getInstance().eventMulticaster as EditorEventMulticasterEx)
+            .addPropertyChangeListener({ event ->
+                if (event.propertyName == EditorEx.PROP_FONT_SIZE ||
+                    event.propertyName == EditorEx.PROP_FONT_SIZE_2D) {
+                    (event.source as? Editor)?.takeIf {
+                        !disposed && !project.isDisposed && !it.isDisposed &&
+                            it === FileEditorManager.getInstance(project).selectedTextEditor &&
+                            it.document === sourceDocument
+                    }?.let {
+                        syncFontSize(it)
+                        syncWithEditor(it)
+                    }
+                }
+            }, this)
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
                 if (event.document === sourceDocument && !refreshPending) {
@@ -164,7 +180,10 @@ class HonnyakuTranslationPanel(
             }
         }
         if (editor != null) {
-            (viewer as EditorEx).setColorsScheme(editor.colorsScheme)
+            // An editor's scheme is bound to that editor; sharing it also shares its font cache.
+            (viewer as EditorEx).setColorsScheme(viewer.createBoundColorSchemeDelegate(editor.colorsScheme))
+            viewer.setFontSize(editor.colorsScheme.editorFontSize2D)
+            syncFontSize(editor)
             viewer.settings.isUseSoftWraps = editor.settings.isUseSoftWraps
             viewer.settings.isLineNumbersShown = editor.settings.isLineNumbersShown
             viewer.settings.isWhitespacesShown = editor.settings.isWhitespacesShown
@@ -212,6 +231,7 @@ class HonnyakuTranslationPanel(
         if (disposed || project.isDisposed || editor.isDisposed || !isShowing ||
             editor !== FileEditorManager.getInstance(project).selectedTextEditor ||
             editor.document !== sourceDocument) return
+        syncFontSize(editor)
         val visible = editor.scrollingModel.visibleArea
         val offset = editor.logicalPositionToOffset(editor.xyToLogicalPosition(Point(0, visible.y)))
         val target = projection.displayOffset(offset).coerceIn(0, viewer.document.textLength)
@@ -222,6 +242,14 @@ class HonnyakuTranslationPanel(
             viewer.scrollingModel.scrollVertically(y.coerceAtLeast(0))
         } finally {
             viewer.scrollingModel.enableAnimation()
+        }
+    }
+
+    private fun syncFontSize(editor: Editor) {
+        val fontSize = editor.colorsScheme.editorFontSize2D
+        // The delegated size can change before the preview's cached rendering font does.
+        if (viewer.colorsScheme.getFont(EditorFontType.PLAIN).size2D != fontSize) {
+            (viewer as EditorEx).setFontSize(fontSize)
         }
     }
 }
