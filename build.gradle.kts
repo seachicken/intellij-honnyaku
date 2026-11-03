@@ -37,12 +37,14 @@ intellijPlatform {
     }
     pluginConfiguration.ideaVersion.sinceBuild = "261"
     pluginConfiguration.changeNotes = """
-        <h2>Features</h2>
+        <h2>Improvements</h2>
         <ul>
-            <li>Translate visible Markdown, plain text, and code comments while the Honnyaku tool window is open</li>
-            <li>View translations alongside the source with synchronized scrolling and persistent results</li>
-            <li>Select a translation model and view reasoning effort, translation progress, and token usage</li>
-            <li>Stop translation automatically when the tool window is hidden</li>
+            <li>Add support for translating plain text and code comments</li>
+            <li>Translate only visible Markdown content and retry failed translation requests</li>
+            <li>Add preferred language selection and share language and model settings across projects</li>
+            <li>Preserve translation token usage across sessions</li>
+            <li>Match the translation preview font size to the source editor</li>
+            <li>Update the tool window icon and bundled Honnyaku to 0.2.1</li>
         </ul>
     """.trimIndent()
     nativeVariants {

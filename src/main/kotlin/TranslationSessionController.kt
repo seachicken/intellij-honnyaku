@@ -13,7 +13,6 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspServer
-import com.intellij.platform.lsp.api.LspServerManagerListener
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.VisibleAreaEvent
 import com.intellij.openapi.editor.event.VisibleAreaListener
@@ -63,17 +62,6 @@ class TranslationSessionController(private val project: Project) : Disposable {
     val isVisible: Boolean get() = visibility.isVisible
 
     init {
-        LspServerManager.getInstance(project).addLspServerManagerListener(object : LspServerManagerListener {
-            override fun fileOpened(lspServer: LspServer, file: VirtualFile) {
-                if (lspServer.providerClass != LanguageServerProvider::class.java) return
-                // Wait until didOpen has registered the document before requesting translation.
-                ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed || !isVisible || !isProjectTranslationFile(project, file)) return@invokeLater
-                    if (FileEditorManager.getInstance(project).selectedFiles.firstOrNull() != file) return@invokeLater
-                    queueVisibleTranslation(force = true)
-                }
-            }
-        }, this)
         val editors = EditorFactory.getInstance().eventMulticaster
         editors.addVisibleAreaListener(object : VisibleAreaListener {
             override fun visibleAreaChanged(event: VisibleAreaEvent) {

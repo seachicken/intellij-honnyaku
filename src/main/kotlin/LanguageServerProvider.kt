@@ -36,6 +36,8 @@ class LanguageServerProvider : LspServerSupportProvider {
             sessionController.syncVisibility()
             if (!sessionController.isVisible) return
             serverStarter.ensureServerStarted(HonnyakuServerDescriptor(project))
+            // Also schedule when an already running server opens another file.
+            sessionController.queueVisibleTranslation(force = true)
         }
     }
 }
@@ -66,7 +68,11 @@ private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerD
 
         override fun serverInitialized(params: InitializeResult) {
             if (supportsModelCatalog(params.capabilities.experimental) &&
-                supportsViewportTranslation(params.capabilities.experimental)) return
+                supportsViewportTranslation(params.capabilities.experimental)) {
+                // The first viewport attempt may have run while the server was starting.
+                project.service<TranslationSessionController>().queueVisibleTranslation(force = true)
+                return
+            }
             ApplicationManager.getApplication().invokeLater {
                 if (project.isDisposed) return@invokeLater
                 val message = "This Honnyaku server requires model catalog and viewport translation support. Rebuild or update the server configured in HONNYAKU_SERVER_PATH."
