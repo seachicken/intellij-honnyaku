@@ -1,6 +1,6 @@
 # Honnyaku for IntelliJ
 
-[![JetBrains plugins](https://img.shields.io/jetbrains/plugin/v/35668-honnyaku.svg)](https://plugins.jetbrains.com/plugin/35668-honnyaku)
+[![JetBrains plugins](https://img.shields.io/github/v/release/seachicken/intellij-honnyaku?label=JetBrains%20plugins)](https://plugins.jetbrains.com/plugin/35668-honnyaku)
 
 Translate the visible part of Markdown, plain text, and code comments, with results in the Honnyaku tool window.
 The plugin uses the IntelliJ Platform built-in LSP API and bundles [Honnyaku](https://github.com/seachicken/honnyaku).
