@@ -14,19 +14,52 @@ import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VfsUtilCore
 
-@Service(Service.Level.PROJECT)
-// Translation preferences are personal to this project's local workspace.
-@State(name = "HonnyakuTranslationModel", storages = [Storage(StoragePathMacros.WORKSPACE_FILE)])
-class HonnyakuSettings(private val project: Project) : PersistentStateComponent<HonnyakuSettings.SettingsState>, Disposable {
+@Service(Service.Level.APP)
+@State(name = "HonnyakuPreferences", storages = [Storage("honnyaku.xml")])
+class HonnyakuPreferences : PersistentStateComponent<HonnyakuPreferences.SettingsState> {
     data class SettingsState(
         var model: String = "",
         var preferredLanguage: String = "Japanese",
+    )
+    private var settingsState = SettingsState()
+    override fun getState(): SettingsState = settingsState
+    override fun loadState(state: SettingsState) { settingsState = state.copy(model = state.model.trim()) }
+
+}
+
+/** Combines IDE-wide preferences with the current project's language choices. */
+class TranslationPreferences(
+    private val global: HonnyakuPreferences.SettingsState,
+    private val local: HonnyakuSettings.SettingsState,
+) {
+    var model: String
+        get() = global.model
+        set(value) { global.model = value }
+    var preferredLanguage: String
+        get() = global.preferredLanguage
+        set(value) { global.preferredLanguage = value }
+    var targetLanguage: String
+        get() = local.targetLanguage
+        set(value) { local.targetLanguage = value }
+    var previewPreferred: Boolean
+        get() = local.previewPreferred
+        set(value) { local.previewPreferred = value }
+}
+
+/** Project session state and project-specific language choices. */
+@Service(Service.Level.PROJECT)
+@State(name = "HonnyakuProjectPreferences", storages = [Storage(StoragePathMacros.WORKSPACE_FILE)])
+class HonnyakuSettings(private val project: Project) : PersistentStateComponent<HonnyakuSettings.SettingsState>, Disposable {
+    data class SettingsState(
         var targetLanguage: String = "Auto",
         var previewPreferred: Boolean = false,
     )
     private var settingsState = SettingsState()
     override fun getState(): SettingsState = settingsState
-    override fun loadState(state: SettingsState) { settingsState = state.copy(model = state.model.trim()) }
+    override fun loadState(state: SettingsState) { settingsState = state }
+
+    val preferences: TranslationPreferences
+        get() = TranslationPreferences(service<HonnyakuPreferences>().state, settingsState)
 
     private val history = project.service<TranslationHistory>()
     val viewModel = HonnyakuViewModel(

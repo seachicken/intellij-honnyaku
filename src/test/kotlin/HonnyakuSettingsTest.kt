@@ -4,6 +4,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HonnyakuSettingsTest {
+    @Test fun `translation preferences restore together without project state`() {
+        val preferences = HonnyakuPreferences()
+        preferences.state.apply {
+            model = "  chosen-model  "
+            preferredLanguage = "English"
+        }
+        val restored = HonnyakuPreferences()
+        restored.loadState(preferences.state.copy())
+        assertEquals(HonnyakuPreferences.SettingsState(
+            model = "chosen-model",
+            preferredLanguage = "English",
+        ), restored.state)
+    }
+
+    @Test fun `projects share model and preferred language but keep target and preview separate`() {
+        val global = HonnyakuPreferences.SettingsState()
+        val firstState = HonnyakuSettings.SettingsState()
+        val secondState = HonnyakuSettings.SettingsState()
+        val first = TranslationPreferences(global, firstState)
+        val second = TranslationPreferences(global, secondState)
+        first.model = "chosen-model"
+        first.preferredLanguage = "English"
+        first.targetLanguage = "French"
+        first.previewPreferred = true
+        assertEquals("chosen-model", second.model)
+        assertEquals("English", second.preferredLanguage)
+        assertEquals("Auto", second.targetLanguage)
+        assertFalse(second.previewPreferred)
+        assertEquals(HonnyakuSettings.SettingsState("French", true), firstState.copy())
+    }
+
     private val uri = "file:///a.md"
     private fun result(restored: Boolean = false) = TranslationUpdate(uri, 1, "English",
         listOf(ParagraphTranslation("原文", "Text", null)), restored = restored)

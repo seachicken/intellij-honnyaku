@@ -71,7 +71,7 @@ class HonnyakuToolWindowFactory : ToolWindowFactory {
             ContentFactory.getInstance().createContent(HonnyakuTranslationPanel(
                 project,
                 project.service<HonnyakuSettings>().viewModel,
-                project.service<HonnyakuSettings>().state,
+                project.service<HonnyakuSettings>().preferences,
             ) {
                 LspServerManager.getInstance(project).stopAndRestartIfNeeded(LanguageServerProvider::class.java)
             }, null, false).apply {
@@ -85,7 +85,7 @@ class HonnyakuToolWindowFactory : ToolWindowFactory {
 class HonnyakuTranslationPanel(
     private val project: Project,
     private val viewModel: HonnyakuViewModel,
-    private val modelSettings: HonnyakuSettings.SettingsState,
+    private val modelSettings: TranslationPreferences,
     private val restartServer: () -> Unit,
 ) : JPanel(BorderLayout()), Disposable {
     private val unsubscribe: () -> Unit
@@ -355,15 +355,15 @@ internal fun automaticTargetLanguage(source: String, preferred: String): String 
         .maxByOrNull { it.second }?.first ?: "English"
 }
 
-internal fun HonnyakuSettings.SettingsState.resolvedTarget(source: String): String =
+internal fun TranslationPreferences.resolvedTarget(source: String): String =
     if (targetLanguage == "Auto") automaticTargetLanguage(source, preferredLanguage) else targetLanguage
 
-internal fun HonnyakuSettings.SettingsState.previewLanguage(source: String): String =
+internal fun TranslationPreferences.previewLanguage(source: String): String =
     if (previewPreferred) preferredLanguage else resolvedTarget(source)
 
 
 internal class TranslationLanguagePanel(
-    private val settings: HonnyakuSettings.SettingsState,
+    private val settings: TranslationPreferences,
     onChange: () -> Unit,
 ) : JPanel(FlowLayout(FlowLayout.LEADING, JBUI.scale(6), JBUI.scale(6))) {
     private val target = ComboBox(arrayOf("Auto") + translationLanguages)
@@ -420,7 +420,7 @@ internal class TranslationLanguagePanel(
 }
 
 internal class TranslationModelPanel(
-    private val settings: HonnyakuSettings.SettingsState,
+    private val settings: TranslationPreferences,
     private val onChange: () -> Unit,
 ) : JPanel(FlowLayout(FlowLayout.LEADING, 0, 0)) {
     private var catalog: TranslationModelCatalog? = null

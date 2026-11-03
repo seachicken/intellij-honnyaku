@@ -47,9 +47,9 @@ internal fun isProjectMarkdown(project: Project, file: VirtualFile): Boolean =
 private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "Honnyaku") {
     override fun createInitializationOptions(): Any =
         translationInitializationOptions(
-            project.service<HonnyakuSettings>().state.model,
+            project.service<HonnyakuSettings>().preferences.model,
             project.service<TranslationHistory>().read(),
-            project.service<HonnyakuSettings>().state.previewLanguage(
+            project.service<HonnyakuSettings>().preferences.previewLanguage(
                 com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).selectedTextEditor?.document?.text.orEmpty()),
         )
 
@@ -150,7 +150,7 @@ class HonnyakuLanguageClient(
             if (!project.isDisposed) {
                 val viewModel = project.service<HonnyakuSettings>().viewModel
                 viewModel.resetRuntimeState()
-                val settings = project.service<HonnyakuSettings>().state
+                val settings = project.service<HonnyakuSettings>().preferences
                 val source = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).selectedTextEditor?.document?.text.orEmpty()
                 viewModel.beginUsageSession(usageSessionId, settings.model, settings.previewLanguage(source))
             }
