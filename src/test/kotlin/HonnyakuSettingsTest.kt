@@ -1,15 +1,5 @@
 package honnyaku
 
-import com.intellij.openapi.actionSystem.ActionManager
-import com.intellij.openapi.actionSystem.ActionPlaces
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.AnActionResult
-import com.intellij.openapi.actionSystem.impl.SimpleDataContext
-import com.intellij.openapi.command.WriteCommandAction
-import com.intellij.openapi.editor.Document
-import com.intellij.openapi.fileEditor.FileDocumentManager
-import com.intellij.openapi.fileEditor.FileDocumentManagerListener
-import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -140,50 +130,5 @@ class TranslationScrollMappingTest {
         assertEquals("\n\nend", display.text)
         assertEquals(0, display.displayOffset(3))
         assertEquals(2, display.displayOffset(7))
-    }
-}
-
-class TranslationSaveListenerTest : BasePlatformTestCase() {
-    fun testExplicitSaveOfUnchangedFileAndSaveAll() {
-        val file = myFixture.addFileToProject("source.txt", "untouched").virtualFile
-        myFixture.openFileInEditor(file)
-        val document = myFixture.editor.document
-        val saved = mutableListOf<Document>()
-        val listener = TranslationSaveListener(project) { saved.add(it) }
-        project.messageBus.connect(testRootDisposable).subscribe(FileDocumentManagerListener.TOPIC, listener)
-        assertFalse(FileDocumentManager.getInstance().isDocumentUnsaved(document))
-        FileDocumentManager.getInstance().saveDocument(document)
-        assertEquals(listOf(document), saved)
-        saved.clear()
-        // The Save All implementation does not emit any per-document callbacks for this file.
-        FileDocumentManager.getInstance().saveAllDocuments()
-        assertTrue(saved.isEmpty())
-        val action = ActionManager.getInstance().getAction("SaveAll")
-        val event = AnActionEvent.createFromAnAction(action, null, ActionPlaces.MAIN_MENU,
-            SimpleDataContext.getProjectContext(project))
-        listener.beforeActionPerformed(action, event)
-        listener.afterActionPerformed(action, event, AnActionResult.PERFORMED)
-        assertEquals(listOf(document), saved)
-    }
-
-    fun testModifiedFileLeavesNotificationToBuiltInLsp() {
-        val file = myFixture.addFileToProject("source.txt", "old").virtualFile
-        myFixture.openFileInEditor(file)
-        val document = myFixture.editor.document
-        val saved = mutableListOf<String>()
-        val listener = TranslationSaveListener(project) { saved.add(it.text) }
-        project.messageBus.connect(testRootDisposable).subscribe(FileDocumentManagerListener.TOPIC, listener)
-        WriteCommandAction.runWriteCommandAction(project) { document.setText("new") }
-        assertTrue(saved.isEmpty())
-        FileDocumentManager.getInstance().saveDocument(document)
-        assertTrue(saved.isEmpty())
-        val action = ActionManager.getInstance().getAction("SaveAll")
-        val event = AnActionEvent.createFromAnAction(action, null, ActionPlaces.MAIN_MENU,
-            SimpleDataContext.getProjectContext(project))
-        WriteCommandAction.runWriteCommandAction(project) { document.setText("newer") }
-        listener.beforeActionPerformed(action, event)
-        FileDocumentManager.getInstance().saveAllDocuments()
-        listener.afterActionPerformed(action, event, AnActionResult.PERFORMED)
-        assertTrue(saved.isEmpty())
     }
 }

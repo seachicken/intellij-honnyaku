@@ -31,8 +31,52 @@ jobs:
         run: |
           echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
 
-      - name: Build and validate distributions
+      - name: Download Honnyaku servers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          server_version=$(sed -n 's/^honnyakuVersion=//p' gradle.properties)
+          gh release download "v$server_version" --repo seachicken/honnyaku \
+            --pattern "honnyaku_${server_version}_*.zip" --dir "$RUNNER_TEMP/honnyaku"
+          for os in linux mac windows; do
+            release_os=$os
+            executable=honnyaku
+            if [[ "$os" == mac ]]; then release_os=darwin; fi
+            if [[ "$os" == windows ]]; then executable=honnyaku.exe; fi
+            for arch in x86_64 arm64; do
+              release_arch=$arch
+              if [[ "$arch" == x86_64 ]]; then release_arch=amd64; fi
+              destination="build/honnyaku/$os-$arch/bin"
+              mkdir -p "$destination"
+              unzip -j "$RUNNER_TEMP/honnyaku/honnyaku_${server_version}_${release_os}_${release_arch}.zip" \
+                "$executable" -d "$destination"
+              test -s "$destination/$executable"
+              chmod +x "$destination/$executable"
+            done
+          done
+
+      - name: Build distributions
         run: ./gradlew --no-daemon buildPluginVariants -PpluginVersion="$VERSION"
+
+      - name: Validate bundled servers
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          for os in ("linux", "mac", "windows"):
+              executable = "honnyaku.exe" if os == "windows" else "honnyaku"
+              for arch in ("x86_64", "arm64"):
+                  bundles = list(Path("build/distributions").glob(f"*-{os}-{arch}.zip"))
+                  assert len(bundles) == 1, f"Expected one distribution for {os}-{arch}: {bundles}"
+                  source = Path(f"build/honnyaku/{os}-{arch}/bin/{executable}")
+                  with ZipFile(bundles[0]) as bundle:
+                      entry = bundle.getinfo(f"intellij-honnyaku/bin/{executable}")
+                      assert entry.file_size > 0, f"Empty server: {bundles[0]}"
+                      assert bundle.read(entry) == source.read_bytes(), f"Wrong server: {bundles[0]}"
+                      if os != "windows":
+                          assert (entry.external_attr >> 16) & 0o111, f"Server is not executable: {bundles[0]}"
+          PY
 
       - name: Publish to JetBrains Marketplace
         env:

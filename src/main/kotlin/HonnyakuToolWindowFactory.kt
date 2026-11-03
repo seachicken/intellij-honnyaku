@@ -48,6 +48,23 @@ import javax.swing.ListCellRenderer
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 
+internal class TranslationScrollListener(
+    private val preview: Editor,
+    private val isActive: () -> Boolean,
+    private val isSyncing: () -> Boolean,
+    private val onPreviewScroll: () -> Unit,
+    private val onSourceScroll: (Editor) -> Unit,
+) : VisibleAreaListener {
+    override fun visibleAreaChanged(event: VisibleAreaEvent) {
+        if (!isActive()) return
+        if (event.editor === preview) {
+            if (!isSyncing() && event.oldRectangle != null && event.oldRectangle != event.newRectangle) onPreviewScroll()
+        } else {
+            onSourceScroll(event.editor)
+        }
+    }
+}
+
 class HonnyakuToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         toolWindow.contentManager.addContent(
@@ -118,16 +135,30 @@ class HonnyakuTranslationPanel(
             add(loadingStatus, BorderLayout.NORTH)
         }, BorderLayout.SOUTH)
         unsubscribe = viewModel.subscribe { refreshSelectedFile() }
-        EditorFactory.getInstance().eventMulticaster.addVisibleAreaListener(object : VisibleAreaListener {
-            override fun visibleAreaChanged(event: VisibleAreaEvent) {
-                if (disposed || project.isDisposed) return
-                if (event.editor === viewer) {
-                    if (!syncingScroll && event.oldRectangle?.y != event.newRectangle.y) previewScrolledManually = true
-                    return
+        project.service<TranslationSessionController>().registerPreviewViewport(this) {
+            if (disposed || !isShowing || !previewScrolledManually) null else {
+                sourceDocument?.let { source ->
+                    val area = viewer.scrollingModel.visibleArea
+                    if (area.height <= 0 || area.width <= 0) null else {
+                        fun sourceLine(y: Int): Int {
+                            val offset = viewer.logicalPositionToOffset(viewer.xyToLogicalPosition(Point(area.x, y)))
+                            return source.getLineNumber(projection.sourceOffset(offset).coerceIn(0, source.textLength))
+                        }
+                        TranslationViewport(source, sourceLine(area.y), sourceLine(area.y + area.height - 1))
+                    }
                 }
-                syncWithEditor(event.editor)
             }
-        }, this)
+        }
+        EditorFactory.getInstance().eventMulticaster.addVisibleAreaListener(TranslationScrollListener(
+            viewer,
+            isActive = { !disposed && !project.isDisposed },
+            isSyncing = { syncingScroll },
+            onPreviewScroll = {
+                previewScrolledManually = true
+                project.service<TranslationSessionController>().queueVisibleTranslation()
+            },
+            onSourceScroll = ::syncWithEditor,
+        ), this)
         viewer.component.addComponentListener(object : java.awt.event.ComponentAdapter() {
             override fun componentResized(event: java.awt.event.ComponentEvent) {
                 if (!disposed && !project.isDisposed) {
@@ -237,8 +268,9 @@ class HonnyakuTranslationPanel(
         if (pending > 0 && isShowing) loadingIcon.resume() else loadingIcon.suspend()
         loadingLabel.text = if (pending > 0) "Translating $pending line${if (pending == 1) "" else "s"}…"
             else "Translation failed · Original text retained"
-        loadingLabel.toolTipText = if (pending > 0) "Saved lines are waiting for translation results" else errors.joinToString("\n")
+        loadingLabel.toolTipText = if (pending > 0) "Visible lines are waiting for translation results" else errors.joinToString("\n")
         if (editor != null && !previewScrolledManually) syncWithEditor(editor)
+        if (previewScrolledManually) project.service<TranslationSessionController>().queueVisibleTranslation()
     }
 
     private fun updateViewerText(value: String) {
@@ -248,10 +280,16 @@ class HonnyakuTranslationPanel(
         // Retain the unchanged prefix and suffix so a translation updates only its changed region.
         val prefix = previous.commonPrefixWith(value).length
         val suffix = previous.substring(prefix).commonSuffixWith(value.substring(prefix)).length
-        CommandProcessor.getInstance().runUndoTransparentAction {
-            ApplicationManager.getApplication().runWriteAction {
-                document.replaceString(prefix, previous.length - suffix, value.substring(prefix, value.length - suffix))
+        val previousSync = syncingScroll
+        syncingScroll = true
+        try {
+            CommandProcessor.getInstance().runUndoTransparentAction {
+                ApplicationManager.getApplication().runWriteAction {
+                    document.replaceString(prefix, previous.length - suffix, value.substring(prefix, value.length - suffix))
+                }
             }
+        } finally {
+            syncingScroll = previousSync
         }
     }
 

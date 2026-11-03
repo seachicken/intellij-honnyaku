@@ -13,7 +13,7 @@
     <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
     <description><![CDATA[
-        Translate changed Markdown paragraphs on save using the bundled Honnyaku language server.
+        Translate visible Markdown lines and nearby context using the Honnyaku language server.
         Requires Codex CLI on PATH and an authenticated Codex session.
     ]]></description>
 

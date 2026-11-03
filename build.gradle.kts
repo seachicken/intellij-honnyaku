@@ -1,11 +1,5 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
-import org.gradle.api.file.ArchiveOperations
-import javax.inject.Inject
-
-// Inject ZIP operations without capturing the script in configuration-cache providers.
-abstract class ArchiveAccess {
-    @get:Inject abstract val archives: ArchiveOperations
-}
+import org.gradle.api.tasks.bundling.Zip
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -28,27 +22,13 @@ dependencies {
     }
 }
 
-val honnyakuVersion = providers.gradleProperty("honnyakuVersion").get()
 version = providers.gradleProperty("pluginVersion").getOrElse(version.toString())
 
-val nativeFiles = listOf("linux", "mac", "windows").flatMap { os ->
-    listOf("x86_64", "arm64").map { arch ->
-        val releaseOs = if (os == "mac") "darwin" else os
-        val releaseArch = if (arch == "x86_64") "amd64" else arch
-        val archive = configurations.create("honnyaku_${os}_${arch}") {
-            isCanBeConsumed = false
-            isTransitive = false
-        }
-        dependencies.add(archive.name, "honnyaku.release:honnyaku:$honnyakuVersion:${releaseOs}_${releaseArch}@zip")
-        val archiveOperations = objects.newInstance<ArchiveAccess>().archives
-        val unpack = tasks.register<Sync>("prepareHonnyaku_${os}_${arch}") {
-            from(archive.elements.map { files -> files.map { archiveOperations.zipTree(it.asFile) } })
-            into(layout.buildDirectory.dir("honnyaku/$os-$arch/bin"))
-            filePermissions { unix("755") }
-        }
-        (os to arch) to unpack.map { it.destinationDir.parentFile }
+tasks.withType<Zip>().configureEach {
+    filesMatching("**/bin/honnyaku") {
+        permissions { unix("755") }
     }
-}.toMap()
+}
 
 intellijPlatform {
     publishing {
@@ -59,7 +39,7 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Features</h2>
         <ul>
-            <li>Translate Markdown into English on save while the Honnyaku tool window is open</li>
+            <li>Translate visible Markdown lines and nearby context while the Honnyaku tool window is open</li>
             <li>View translations alongside the source with synchronized scrolling and persistent results</li>
             <li>Select a translation model and view reasoning effort, translation progress, and token usage</li>
             <li>Stop translation automatically when the tool window is hidden</li>
@@ -67,11 +47,11 @@ intellijPlatform {
     """.trimIndent()
     nativeVariants {
         enabled = true
-        linux.x86_64.from(nativeFiles.getValue("linux" to "x86_64"))
-        linux.arm64.from(nativeFiles.getValue("linux" to "arm64"))
-        mac.x86_64.from(nativeFiles.getValue("mac" to "x86_64"))
-        mac.arm64.from(nativeFiles.getValue("mac" to "arm64"))
-        windows.x86_64.from(nativeFiles.getValue("windows" to "x86_64"))
-        windows.arm64.from(nativeFiles.getValue("windows" to "arm64"))
+        linux.x86_64.from(layout.buildDirectory.dir("honnyaku/linux-x86_64"))
+        linux.arm64.from(layout.buildDirectory.dir("honnyaku/linux-arm64"))
+        mac.x86_64.from(layout.buildDirectory.dir("honnyaku/mac-x86_64"))
+        mac.arm64.from(layout.buildDirectory.dir("honnyaku/mac-arm64"))
+        windows.x86_64.from(layout.buildDirectory.dir("honnyaku/windows-x86_64"))
+        windows.arm64.from(layout.buildDirectory.dir("honnyaku/windows-arm64"))
     }
 }

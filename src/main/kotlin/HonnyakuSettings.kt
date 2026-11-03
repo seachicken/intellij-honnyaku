@@ -2,26 +2,16 @@ package honnyaku
 
 import com.google.gson.Gson
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.actionSystem.ActionManager
-import com.intellij.openapi.actionSystem.AnAction
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.AnActionResult
-import com.intellij.openapi.actionSystem.ex.AnActionListener
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.openapi.components.service
-import com.intellij.openapi.editor.Document
-import com.intellij.openapi.fileEditor.FileDocumentManager
-import com.intellij.openapi.fileEditor.FileDocumentManagerListener
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.VfsUtilCore
 
 @Service(Service.Level.PROJECT)
@@ -47,29 +37,12 @@ class HonnyakuSettings(private val project: Project) : PersistentStateComponent<
     ).apply { selectedFileUri()?.let { selectedUri = it } }
 
     init {
-        val saves = TranslationSaveListener(project, ::queueTranslationSave)
-        project.messageBus.connect(this).subscribe(FileDocumentManagerListener.TOPIC, saves)
-        project.messageBus.connect(this).subscribe(AnActionListener.TOPIC, saves)
         project.messageBus.connect(this).subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
                 override fun selectionChanged(event: FileEditorManagerEvent) {
                     selectedFileUri()?.let { viewModel.selectedUri = it }
                 }
             })
-    }
-
-    private fun queueTranslationSave(document: Document) {
-        val snapshot = ApplicationManager.getApplication().runReadAction(Computable {
-            if (project.isDisposed) return@Computable null
-            val file = FileDocumentManager.getInstance().getFile(document) ?: return@Computable null
-            if (!isProjectMarkdown(project, file)) return@Computable null
-            Triple(file, VfsUtilCore.virtualToIoFile(file).toURI().toASCIIString(), document.text)
-        }) ?: return
-        ApplicationManager.getApplication().invokeLater {
-            if (!project.isDisposed && project.service<TranslationSessionController>().isVisible) {
-                notifyUnchangedDocumentSaved(project, snapshot.first, snapshot.third)
-            }
-        }
     }
 
     private fun selectedFileUri(): String? = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
@@ -102,35 +75,6 @@ class TranslationHistory : PersistentStateComponent<TranslationHistory.HistorySt
     }.getOrDefault(emptyList())
 }
 
-/** Also catch explicit saves which IntelliJ omits from its normal changed-document notifications. */
-internal class TranslationSaveListener(
-    private val project: Project,
-    private val queueSave: (Document) -> Unit,
-) : FileDocumentManagerListener, AnActionListener {
-    override fun beforeAnyDocumentSaving(document: Document, explicit: Boolean) {
-        if (explicit && !FileDocumentManager.getInstance().isDocumentUnsaved(document)) queueSave(document)
-    }
-
-
-
-    private var unchangedOnSaveAll: Document? = null
-
-    override fun beforeActionPerformed(action: AnAction, event: AnActionEvent) {
-        if (event.project == project && ActionManager.getInstance().getId(action) == "SaveAll") {
-            unchangedOnSaveAll = FileEditorManager.getInstance(project).selectedTextEditor?.document
-                ?.takeUnless { FileDocumentManager.getInstance().isDocumentUnsaved(it) }
-        }
-    }
-
-    override fun afterActionPerformed(action: AnAction, event: AnActionEvent, result: AnActionResult) {
-        if (event.project == project && ActionManager.getInstance().getId(action) == "SaveAll") {
-            val document = unchangedOnSaveAll
-            unchangedOnSaveAll = null
-            if (result.isPerformed && document != null && !FileDocumentManager.getInstance().isDocumentUnsaved(document)) queueSave(document)
-        }
-    }
-}
-
 internal data class TranslationTextRange(
     val sourceStart: Int,
     val sourceEnd: Int,
@@ -139,6 +83,13 @@ internal data class TranslationTextRange(
 )
 
 internal data class TranslationDocument(val text: String, val ranges: List<TranslationTextRange>) {
+    fun sourceOffset(displayOffset: Int): Int {
+        val range = ranges.firstOrNull { displayOffset < it.displayEnd } ?: return ranges.lastOrNull()?.sourceEnd ?: 0
+        val offset = displayOffset.coerceIn(range.displayStart, range.displayEnd)
+        return range.sourceStart + ((offset - range.displayStart).toLong() *
+            (range.sourceEnd - range.sourceStart) / (range.displayEnd - range.displayStart)).toInt()
+    }
+
     fun displayOffset(sourceOffset: Int): Int {
         val range = ranges.firstOrNull { sourceOffset < it.sourceEnd } ?: return text.length
         val offset = sourceOffset.coerceIn(range.sourceStart, range.sourceEnd)

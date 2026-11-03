@@ -24,9 +24,10 @@ import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import java.nio.file.Files
 import java.text.NumberFormat
 import java.util.Locale
-import com.intellij.platform.lsp.api.LspServerState
-import org.eclipse.lsp4j.DidSaveTextDocumentParams
 import org.eclipse.lsp4j.Range
+import org.eclipse.lsp4j.services.LanguageServer
+import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
+import java.util.concurrent.CompletableFuture
 
 class LanguageServerProvider : LspServerSupportProvider {
     override fun fileOpened(project: Project, file: VirtualFile, serverStarter: LspServerSupportProvider.LspServerStarter) {
@@ -60,10 +61,11 @@ private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerD
         }
 
         override fun serverInitialized(params: InitializeResult) {
-            if (supportsModelCatalog(params.capabilities.experimental)) return
+            if (supportsModelCatalog(params.capabilities.experimental) &&
+                supportsViewportTranslation(params.capabilities.experimental)) return
             ApplicationManager.getApplication().invokeLater {
                 if (project.isDisposed) return@invokeLater
-                val message = "This Honnyaku server cannot provide the model list. Rebuild or update the server configured in HONNYAKU_SERVER_PATH."
+                val message = "This Honnyaku server requires model catalog and viewport translation support. Rebuild or update the server configured in HONNYAKU_SERVER_PATH."
                 project.service<HonnyakuSettings>().viewModel.receiveModelCatalog(TranslationModelCatalog(error = message))
                 LspServerManager.getInstance(project).stopServers(LanguageServerProvider::class.java)
                 NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
@@ -97,6 +99,28 @@ private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerD
 
     override fun createLsp4jClient(handler: LspServerNotificationsHandler): Lsp4jClient =
         HonnyakuLanguageClient(project, handler)
+
+    override val lsp4jServerClass: Class<out LanguageServer> = HonnyakuLanguageServer::class.java
+}
+
+interface HonnyakuLanguageServer : LanguageServer {
+    @JsonRequest("honnyaku/translateVisible")
+    fun translateVisible(params: VisibleTranslationParams): CompletableFuture<Any?>
+}
+
+data class VisibleTranslationDocument(val uri: String, val version: Int, val text: String)
+data class VisibleTranslationParams(
+    val textDocument: VisibleTranslationDocument,
+    val startLine: Int,
+    val endLine: Int,
+)
+
+internal fun supportsViewportTranslation(experimental: Any?): Boolean = when (experimental) {
+    is Map<*, *> -> experimental["honnyakuViewportTranslation"] == true
+    is JsonObject -> experimental.get("honnyakuViewportTranslation")?.let {
+        it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean
+    } == true
+    else -> false
 }
 
 internal fun supportsModelCatalog(experimental: Any?): Boolean = when (experimental) {
@@ -115,13 +139,6 @@ internal fun translationInitializationOptions(
 ): Map<String, Any> = translationModelOptions(model) +
     (if (saved.isEmpty()) emptyMap() else mapOf("initialTranslations" to saved)) +
     (targetLanguage?.let { mapOf("targetLanguage" to it) } ?: emptyMap())
-
-internal fun notifyUnchangedDocumentSaved(project: Project, file: VirtualFile, source: String) {
-    val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
-        .firstOrNull { it.state == LspServerState.Running } ?: return
-    val params = DidSaveTextDocumentParams(server.getDocumentIdentifier(file), source)
-    server.sendNotification { it.textDocumentService.didSave(params) }
-}
 
 class HonnyakuLanguageClient(
     private val project: Project,
