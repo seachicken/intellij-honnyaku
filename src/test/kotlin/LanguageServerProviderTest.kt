@@ -12,6 +12,24 @@ import java.util.concurrent.TimeUnit
 import org.junit.Test
 
 class LanguageServerProviderTest {
+    @Test fun `range scope distinguishes omitted empty and explicit ranges on the wire`() {
+        val gson = com.google.gson.Gson()
+        val params = VisibleTranslationParams(VisibleTranslationDocument("file:///a.kt", 1, "code // hello"), 0, 1)
+        assertFalse(gson.toJsonTree(params).asJsonObject.has("ranges"))
+        assertEquals(0, gson.toJsonTree(params.copy(ranges = emptyList())).asJsonObject["ranges"].asJsonArray.size())
+        val range = org.eclipse.lsp4j.Range(org.eclipse.lsp4j.Position(0, 5), org.eclipse.lsp4j.Position(0, 13))
+        assertEquals(5, gson.toJsonTree(params.copy(ranges = listOf(range))).asJsonObject["ranges"].asJsonArray[0].asJsonObject["start"].asJsonObject["character"].asInt)
+        assertFalse(supportsRangeTranslation(null))
+        assertTrue(supportsRangeTranslation(mapOf("honnyakuRangeTranslation" to true)))
+    }
+
+    @Test fun `inline comment replacements preserve code and ignore stale ranges`() {
+        val range = org.eclipse.lsp4j.Range(org.eclipse.lsp4j.Position(0, 8), org.eclipse.lsp4j.Position(0, 16))
+        val update = TranslationUpdate("file:///a.kt", 1, "English", listOf(ParagraphTranslation("// hello", "// こんにちは", null, range)))
+        assertEquals("😀 code // こんにちは", translationDocument("😀 code // hello", listOf(update)).text)
+        assertEquals("changed code // hello", translationDocument("changed code // hello", listOf(update)).text)
+    }
+
     @Test fun `custom LSP request transmits an atomic viewport snapshot and accepts null completion`() {
         val response = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}"
         val input = "Content-Length: ${response.toByteArray().size}\r\n\r\n$response"

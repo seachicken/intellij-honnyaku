@@ -1,6 +1,6 @@
 # Honnyaku for IntelliJ
 
-Translate the visible part of Markdown, with results in the Honnyaku tool window.
+Translate the visible part of Markdown, plain text, and code comments, with results in the Honnyaku tool window.
 The plugin uses the IntelliJ Platform built-in LSP API and bundles [Honnyaku](https://github.com/seachicken/honnyaku).
 
 ## Requirements

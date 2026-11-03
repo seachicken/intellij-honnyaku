@@ -79,7 +79,7 @@ class HonnyakuSettings(private val project: Project) : PersistentStateComponent<
     }
 
     private fun selectedFileUri(): String? = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
-        ?.takeIf { isProjectMarkdown(project, it) }
+        ?.takeIf { isProjectTranslationFile(project, it) }
         ?.let { VfsUtilCore.virtualToIoFile(it).toURI().toASCIIString() }
 
     override fun dispose() { viewModel.dispose() }
@@ -148,6 +148,13 @@ internal fun translationDocument(source: String, history: List<TranslationUpdate
     }
     history.flatMap { it.translations }.forEachIndexed { priority, result ->
         if (result.error == null && result.text != null) {
+            val span = result.range?.let { sourceOffsets(source, it) }
+            if (result.range != null) {
+                if (span != null && source.substring(span.first, span.second) == result.sourceText) {
+                    candidates.add(Replacement(span.first, span.second, result.text, priority))
+                }
+                return@forEachIndexed
+            }
             match(result.sourceText, result.text, priority)
             // Migrate older paragraph results where their source and translation have matching lines.
             val originalLines = result.sourceText.split('\n')
@@ -181,4 +188,17 @@ internal fun translationDocument(source: String, history: List<TranslationUpdate
     }
     append(cursor, source.length, source.substring(cursor))
     return TranslationDocument(text.toString(), ranges)
+}
+
+/** LSP characters and Kotlin string offsets both count UTF-16 code units. */
+internal fun sourceOffsets(source: String, range: org.eclipse.lsp4j.Range): Pair<Int, Int>? {
+    val lines = source.split('\n')
+    fun offset(position: org.eclipse.lsp4j.Position): Int? {
+        val line = lines.getOrNull(position.line) ?: return null
+        if (position.character !in 0..line.length) return null
+        return lines.take(position.line).sumOf { it.length + 1 } + position.character
+    }
+    val start = offset(range.start) ?: return null
+    val end = offset(range.end) ?: return null
+    return if (start <= end) start to end else null
 }

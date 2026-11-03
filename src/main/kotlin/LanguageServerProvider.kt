@@ -31,7 +31,7 @@ import java.util.concurrent.CompletableFuture
 
 class LanguageServerProvider : LspServerSupportProvider {
     override fun fileOpened(project: Project, file: VirtualFile, serverStarter: LspServerSupportProvider.LspServerStarter) {
-        if (isProjectMarkdown(project, file)) {
+        if (isProjectTranslationFile(project, file)) {
             val sessionController = project.service<TranslationSessionController>()
             sessionController.syncVisibility()
             if (!sessionController.isVisible) return
@@ -40,8 +40,12 @@ class LanguageServerProvider : LspServerSupportProvider {
     }
 }
 
-internal fun isProjectMarkdown(project: Project, file: VirtualFile): Boolean =
-    file.fileType.name.equals("Markdown", ignoreCase = true) &&
+internal fun isProjectTranslationFile(project: Project, file: VirtualFile): Boolean =
+    !file.isDirectory && !file.fileType.isBinary &&
+        (isWholeDocumentTranslation(file) ||
+            (file.fileType as? com.intellij.openapi.fileTypes.LanguageFileType)?.language?.let {
+                com.intellij.lang.LanguageParserDefinitions.INSTANCE.forLanguage(it) != null
+            } == true) &&
         ProjectFileIndex.getInstance(project).isInContent(file)
 
 private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "Honnyaku") {
@@ -76,14 +80,17 @@ private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerD
         }
     }
 
-    override fun isSupportedFile(file: VirtualFile): Boolean = isProjectMarkdown(project, file)
+    override fun isSupportedFile(file: VirtualFile): Boolean = isProjectTranslationFile(project, file)
 
     override fun startServerProcess(): OSProcessHandler {
         check(project.service<TranslationSessionController>().isVisible) { "Open Honnyaku to enable translation" }
         return super.startServerProcess().also { project.service<TranslationSessionController>().track(it) }
     }
 
-    override fun getLanguageId(file: VirtualFile): String = "markdown"
+    override fun getLanguageId(file: VirtualFile): String =
+        if (file.fileType.name.equals("Markdown", ignoreCase = true)) "markdown"
+        else if (isWholeDocumentTranslation(file)) "plaintext"
+        else (file.fileType as com.intellij.openapi.fileTypes.LanguageFileType).language.id.lowercase(Locale.ROOT)
 
     override fun createCommandLine(): GeneralCommandLine {
         val developmentExecutable = System.getenv("HONNYAKU_SERVER_PATH")?.takeIf { it.isNotBlank() }
@@ -113,6 +120,7 @@ data class VisibleTranslationParams(
     val textDocument: VisibleTranslationDocument,
     val startLine: Int,
     val endLine: Int,
+    val ranges: List<Range>? = null,
 )
 
 internal fun supportsViewportTranslation(experimental: Any?): Boolean = when (experimental) {
@@ -251,3 +259,15 @@ data class AvailableTranslationModel(
 }
 
 data class ReasoningEffortOption(val reasoningEffort: String)
+
+internal fun supportsRangeTranslation(experimental: Any?): Boolean = when (experimental) {
+    is Map<*, *> -> experimental["honnyakuRangeTranslation"] == true
+    is JsonObject -> experimental.get("honnyakuRangeTranslation")?.let {
+        it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean
+    } == true
+    else -> false
+}
+
+internal fun isWholeDocumentTranslation(file: VirtualFile): Boolean =
+    file.fileType == com.intellij.openapi.fileTypes.PlainTextFileType.INSTANCE ||
+        file.fileType.name.equals("Markdown", ignoreCase = true)

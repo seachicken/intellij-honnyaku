@@ -1,6 +1,7 @@
 package honnyaku
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.CommandProcessor
 import com.intellij.openapi.components.service
@@ -99,7 +100,18 @@ class HonnyakuTranslationPanel(
     )
     private val loadingDecoration = TranslationLoadingDecoration(viewer)
     private val loadingIcon = AsyncProcessIcon("Translation").apply { suspend() }
-    private val loadingLabel = JBLabel()
+    private var translationErrorDetails = ""
+    private val loadingLabel = JBLabel().apply {
+        addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(event: java.awt.event.MouseEvent) {
+                if (translationErrorDetails.isNotBlank()) {
+                    com.intellij.openapi.ide.CopyPasteManager.getInstance().setContents(
+                        java.awt.datatransfer.StringSelection(translationErrorDetails),
+                    )
+                }
+            }
+        })
+    }
     private val loadingStatus = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
         isVisible = false
         border = JBUI.Borders.emptyBottom(6)
@@ -215,6 +227,14 @@ class HonnyakuTranslationPanel(
     }
 
     private fun refreshSelectedFile() {
+        // Updating the preview document needs both model locks and a write-safe
+        // transaction context; acquiring the lock alone is insufficient.
+        ApplicationManager.getApplication().invokeLater({
+            WriteIntentReadAction.run { refreshSelectedFileUnderLock() }
+        }, com.intellij.openapi.application.ModalityState.nonModal())
+    }
+
+    private fun refreshSelectedFileUnderLock() {
         if (disposed || project.isDisposed) return
         val uri = viewModel.selectedUri
         usageLabel.updateUsage(viewModel.usage(uri), viewModel.usageSessions(uri))
@@ -267,8 +287,12 @@ class HonnyakuTranslationPanel(
         loadingIcon.isVisible = pending > 0
         if (pending > 0 && isShowing) loadingIcon.resume() else loadingIcon.suspend()
         loadingLabel.text = if (pending > 0) "Translating $pending line${if (pending == 1) "" else "s"}…"
-            else "Translation failed · Original text retained"
-        loadingLabel.toolTipText = if (pending > 0) "Visible lines are waiting for translation results" else errors.joinToString("\n")
+            else "Translation failed · Click to copy error"
+        translationErrorDetails = if (pending > 0) "" else errors.distinct().joinToString("\n")
+        loadingLabel.cursor = java.awt.Cursor.getPredefinedCursor(
+            if (translationErrorDetails.isNotBlank()) java.awt.Cursor.HAND_CURSOR else java.awt.Cursor.DEFAULT_CURSOR,
+        )
+        loadingLabel.toolTipText = if (pending > 0) "Visible lines are waiting for translation results" else translationErrorDetails
         if (editor != null && !previewScrolledManually) syncWithEditor(editor)
         if (previewScrolledManually) project.service<TranslationSessionController>().queueVisibleTranslation()
     }

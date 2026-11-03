@@ -22,6 +22,11 @@ import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.platform.lsp.api.LspServerState
+import com.intellij.psi.PsiComment
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiRecursiveElementWalkingVisitor
+import org.eclipse.lsp4j.Position
+import org.eclipse.lsp4j.Range
 import javax.swing.Timer
 import java.awt.Point
 import com.intellij.openapi.editor.Document
@@ -63,7 +68,7 @@ class TranslationSessionController(private val project: Project) : Disposable {
                 if (lspServer.providerClass != LanguageServerProvider::class.java) return
                 // Wait until didOpen has registered the document before requesting translation.
                 ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed || !isVisible || !isProjectMarkdown(project, file)) return@invokeLater
+                    if (project.isDisposed || !isVisible || !isProjectTranslationFile(project, file)) return@invokeLater
                     if (FileEditorManager.getInstance(project).selectedFiles.firstOrNull() != file) return@invokeLater
                     queueVisibleTranslation(force = true)
                 }
@@ -117,7 +122,7 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return
         val document = editor.document
         val file = FileDocumentManager.getInstance().getFile(document) ?: return
-        if (!isProjectMarkdown(project, file)) return
+        if (!isProjectTranslationFile(project, file)) return
         val preview = previewViewport?.invoke()?.takeIf { it.document === document }
         val area = editor.scrollingModel.visibleArea
         if (preview == null && (area.height <= 0 || area.width <= 0)) return
@@ -127,9 +132,19 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
             .firstOrNull { it.state == LspServerState.Running } ?: return
         if (!supportsViewportTranslation(server.initializeResult?.capabilities?.experimental)) return
+        if (!isWholeDocumentTranslation(file) &&
+            !supportsRangeTranslation(server.initializeResult?.capabilities?.experimental)) return
+        val ranges = if (isWholeDocumentTranslation(file)) null else {
+            commentTranslationRanges(project, document) ?: run {
+                com.intellij.psi.PsiDocumentManager.getInstance(project).performForCommittedDocument(document) {
+                    queueVisibleTranslation()
+                }
+                return
+            }
+        }
         val params = VisibleTranslationParams(
             VisibleTranslationDocument(server.getDocumentIdentifier(file).uri, server.getDocumentVersion(document), document.text),
-            window.first, window.second,
+            window.first, window.second, ranges,
         )
         val attempt = Attempt(server, params)
         if (lastAttempt == attempt || !retries.canAttempt(attempt)) return
@@ -176,9 +191,12 @@ class TranslationSessionController(private val project: Project) : Disposable {
 
 internal data class TranslationViewport(val document: Document, val firstLine: Int, val lastLine: Int)
 
-/** Swing timer callbacks run on EDT without an IntelliJ read action. */
+/** Swing timers have no model locks or write-safe transaction context. */
 internal fun translationViewportTimer(translate: () -> Unit): Timer = Timer(1_000) {
-    ApplicationManager.getApplication().runReadAction(Runnable { translate() })
+    ApplicationManager.getApplication().invokeLater(
+        { translate() },
+        com.intellij.openapi.application.ModalityState.nonModal(),
+    )
 }.apply { isRepeats = false }
 
 /** Inclusive visible endpoints become a padded, half-open source line window. */
@@ -215,4 +233,27 @@ internal class TranslationRetryBudget<T>(private val maxAttempts: Int = 3) {
         failedAttempt = null
         failures = 0
     }
+}
+
+/**
+ * Positions refer to the committed snapshot sent with the request.
+ * Null means PSI is still catching up; an empty list means there are no comments.
+ */
+internal fun commentTranslationRanges(project: Project, document: Document): List<Range>? {
+    val manager = PsiDocumentManager.getInstance(project)
+    // The IDE commits edits asynchronously. Never force a commit from a UI callback.
+    if (!manager.isCommitted(document)) return null
+    val psi = manager.getPsiFile(document) ?: return emptyList()
+    val ranges = mutableListOf<Range>()
+    fun position(offset: Int): Position {
+        val line = document.getLineNumber(offset)
+        return Position(line, offset - document.getLineStartOffset(line))
+    }
+    psi.accept(object : PsiRecursiveElementWalkingVisitor() {
+        override fun visitComment(comment: PsiComment) {
+            val range = comment.textRange
+            ranges.add(Range(position(range.startOffset), position(range.endOffset)))
+        }
+    })
+    return ranges
 }

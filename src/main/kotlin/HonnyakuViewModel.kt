@@ -148,6 +148,13 @@ internal class TranslationActivity {
         val candidates = sourceBlocks(source)
         val matched = mutableListOf<SourceBlock>()
         pending[URI(uri).normalize()]?.lines.orEmpty().forEach { line ->
+            if (line.range != null) {
+                val span = sourceOffsets(source, line.range)
+                if (span != null && source.substring(span.first, span.second) == line.sourceText) {
+                    matched.add(SourceBlock(span.first, span.second, line.sourceText))
+                }
+                return@forEach
+            }
             candidates.filter { it.text == line.sourceText && it !in matched }
                 .minByOrNull { block ->
                     kotlin.math.abs(source.take(block.start).count { it == '\n' } - (line.range?.start?.line ?: 0))

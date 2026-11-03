@@ -39,7 +39,7 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Features</h2>
         <ul>
-            <li>Translate visible Markdown lines and nearby context while the Honnyaku tool window is open</li>
+            <li>Translate visible Markdown, plain text, and code comments while the Honnyaku tool window is open</li>
             <li>View translations alongside the source with synchronized scrolling and persistent results</li>
             <li>Select a translation model and view reasoning effort, translation progress, and token usage</li>
             <li>Stop translation automatically when the tool window is hidden</li>
