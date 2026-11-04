@@ -32,4 +32,20 @@ class TranslationSessionControllerTest : BasePlatformTestCase() {
         val file = myFixture.configureByText("example.txt", "hello")
         assertTrue(isWholeDocumentTranslation(file.virtualFile))
     }
+
+    fun testAsciiDocUsesWholeDocumentWithALanguageFileType() {
+        // Simulate the AsciiDoc plugin so plain-text fallback cannot hide a regression.
+        val fileType = TestAsciiDocFileType()
+        for (name in listOf("example.adoc", "custom.doc")) {
+            val file = com.intellij.testFramework.LightVirtualFile(name, fileType, "= Title\n\n本文")
+            assertTrue(name, isWholeDocumentTranslation(file))
+        }
+    }
+
+    private class TestAsciiDocFileType : com.intellij.openapi.fileTypes.LanguageFileType(com.intellij.lang.Language.ANY) {
+        override fun getName() = "AsciiDoc"
+        override fun getDescription() = "AsciiDoc"
+        override fun getDefaultExtension() = "adoc"
+        override fun getIcon(): javax.swing.Icon? = null
+    }
 }

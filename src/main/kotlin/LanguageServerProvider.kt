@@ -276,4 +276,5 @@ internal fun supportsRangeTranslation(experimental: Any?): Boolean = when (exper
 
 internal fun isWholeDocumentTranslation(file: VirtualFile): Boolean =
     file.fileType == com.intellij.openapi.fileTypes.PlainTextFileType.INSTANCE ||
-        file.fileType.name.equals("Markdown", ignoreCase = true)
+        file.fileType.name.equals("Markdown", ignoreCase = true) ||
+        file.fileType.name.equals("AsciiDoc", ignoreCase = true)

@@ -1,9 +1,11 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.gradle.api.tasks.bundling.Zip
+import org.jetbrains.changelog.markdownToHTML
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
     id("org.jetbrains.intellij.platform")
+    id("org.jetbrains.changelog") version "2.5.0"
 }
 
 kotlin { jvmToolchain(21) }
@@ -31,6 +33,18 @@ tasks.withType<Zip>().configureEach {
 }
 
 intellijPlatform {
+    pluginConfiguration.description = providers.fileContents(layout.projectDirectory.file("README.md")).asText.map {
+        val start = "<!-- Plugin description -->"
+        val end = "<!-- Plugin description end -->"
+        val lines = it.lines()
+        val startIndex = lines.indexOf(start)
+        val endIndex = lines.indexOf(end)
+
+        if (startIndex < 0 || endIndex <= startIndex) {
+            throw GradleException("Plugin description section not found in README.md:\n$start ... $end")
+        }
+        lines.subList(startIndex + 1, endIndex).joinToString("\n").let(::markdownToHTML)
+    }
     publishing {
         token = providers.environmentVariable("PUBLISH_TOKEN")
         channels = listOf(version.toString().substringAfter('-', "").substringBefore('.').ifEmpty { "default" })
