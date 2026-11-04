@@ -38,7 +38,7 @@ class LanguageServerProviderTest {
             .setInput(ByteArrayInputStream(input.toByteArray()))
             .setOutput(output)
             .create()
-        val result = launcher.remoteProxy.clearTranslationCache(ClearTranslationCacheParams("file:///a.md", "Japanese"))
+        val result = launcher.remoteProxy.clearTranslationCache(ClearTranslationCacheParams("file:///a.md", "ja"))
         val listening = launcher.startListening()
         try {
             assertNull(result.get(5, TimeUnit.SECONDS))
@@ -46,13 +46,13 @@ class LanguageServerProviderTest {
             assertEquals("honnyaku/clearTranslationCache", message["method"].asString)
             val params = message["params"].asJsonObject
             assertEquals("file:///a.md", params["uri"].asString)
-            assertEquals("Japanese", params["targetLanguage"].asString)
+            assertEquals("ja", params["targetLanguage"].asString)
         } finally { listening.cancel(true) }
     }
 
     @Test fun `inline comment replacements preserve code and ignore stale ranges`() {
         val range = org.eclipse.lsp4j.Range(org.eclipse.lsp4j.Position(0, 8), org.eclipse.lsp4j.Position(0, 16))
-        val update = TranslationUpdate("file:///a.kt", 1, "English", listOf(ParagraphTranslation("// hello", "// こんにちは", null, range)))
+        val update = TranslationUpdate("file:///a.kt", 1, "en", listOf(ParagraphTranslation("// hello", "// こんにちは", null, range)))
         assertEquals("😀 code // こんにちは", translationDocument("😀 code // hello", listOf(update)).text)
         assertEquals("changed code // hello", translationDocument("changed code // hello", listOf(update)).text)
     }
@@ -101,7 +101,7 @@ class LanguageServerProviderTest {
 
     @Test fun `scrolling accumulates partial translations and edits retain only matching source`() {
         val model = HonnyakuViewModel()
-        val first = TranslationUpdate("file:///a.md", 1, "English", listOf(ParagraphTranslation("一", "one", null)))
+        val first = TranslationUpdate("file:///a.md", 1, "en", listOf(ParagraphTranslation("一", "one", null)))
         val second = first.copy(translations = listOf(ParagraphTranslation("三", "three", null)))
         model.receiveTranslation(first)
         model.receiveTranslation(second)
@@ -110,17 +110,17 @@ class LanguageServerProviderTest {
     }
 
     @Test fun `changing server target preserves caches for both directions`() {
-        val english = TranslationUpdate("file:///a.md", 1, "English", listOf(ParagraphTranslation("原文", "English text", null)))
-        val french = english.copy(targetLanguage = "French", translations = listOf(ParagraphTranslation("原文", "Texte français", null)))
+        val english = TranslationUpdate("file:///a.md", 1, "en", listOf(ParagraphTranslation("原文", "English text", null)))
+        val french = english.copy(targetLanguage = "fr", translations = listOf(ParagraphTranslation("原文", "Texte français", null)))
         val saved = listOf(english, french)
-        for (language in listOf("English", "French", "English")) {
+        for (language in listOf("en", "fr", "en")) {
             val options = translationInitializationOptions("model", saved, language)
             assertEquals(language, options["targetLanguage"])
             assertEquals(saved, options["initialTranslations"])
             assertEquals("model", options["model"])
             val restored = HonnyakuViewModel(options["initialTranslations"] as List<TranslationUpdate>)
             val preview = translationDocument("原文", restored.history(english.uri).filter { it.targetLanguage == language })
-            assertEquals(if (language == "English") "English text" else "Texte français", preview.text)
+            assertEquals(if (language == "en") "English text" else "Texte français", preview.text)
         }
     }
 }

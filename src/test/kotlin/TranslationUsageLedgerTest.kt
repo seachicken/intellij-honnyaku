@@ -6,7 +6,7 @@ import org.junit.Test
 class TranslationUsageLedgerTest {
     private val uri = "file:///a.md"
 
-    private fun session(id: String = "first", file: String = uri, language: String = "English",
+    private fun session(id: String = "first", file: String = uri, language: String = "en",
                         model: String = "model-a", usage: TranslationTokenUsage = TranslationTokenUsage(80, 60, 20, 100)) =
         TranslationUsageSession(id, file, model, language, 1, usage)
 
@@ -31,11 +31,11 @@ class TranslationUsageLedgerTest {
     @Test fun `file total includes all sessions across languages and models`() {
         val ledger = TranslationUsageLedger(emptyList()) {}
         ledger.record(session())
-        ledger.record(session(id = "second", language = "French", model = "model-b",
+        ledger.record(session(id = "second", language = "fr", model = "model-b",
             usage = TranslationTokenUsage(40, 10, 10, 50)))
 
         assertEquals(TranslationTokenUsage(120, 70, 30, 150), ledger.total(uri))
-        assertEquals(listOf("English", "French"), ledger.sessions(uri).map { it.targetLanguage })
+        assertEquals(listOf("en", "fr"), ledger.sessions(uri).map { it.targetLanguage })
         assertEquals(listOf("model-a", "model-b"), ledger.sessions(uri).map { it.model })
     }
 

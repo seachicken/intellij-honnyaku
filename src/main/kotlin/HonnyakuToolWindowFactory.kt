@@ -401,22 +401,43 @@ class HonnyakuTranslationPanel(
     }
 }
 
-internal val translationLanguages = arrayOf("Japanese", "English", "Chinese", "Korean", "French", "German", "Spanish", "Portuguese", "Italian", "Russian", "Arabic")
+internal data class TranslationLanguage(val code: String, val nativeName: String) {
+    val displayCode: String get() = code.uppercase(java.util.Locale.ROOT)
+    val label: String get() = "$nativeName ($displayCode)"
+}
+
+internal val translationLanguageOptions = listOf(
+    TranslationLanguage("ar", "العربية"),
+    TranslationLanguage("de", "Deutsch"),
+    TranslationLanguage("en", "English"),
+    TranslationLanguage("es", "Español"),
+    TranslationLanguage("fr", "Français"),
+    TranslationLanguage("it", "Italiano"),
+    TranslationLanguage("ja", "日本語"),
+    TranslationLanguage("ko", "한국어"),
+    TranslationLanguage("pt", "Português"),
+    TranslationLanguage("ru", "Русский"),
+    TranslationLanguage("zh-Hans", "简体中文"),
+    TranslationLanguage("zh-Hant", "繁體中文"),
+)
+internal val translationLanguages = translationLanguageOptions.map { it.code }.toTypedArray()
+internal fun languageOption(value: String?) = translationLanguageOptions.find { it.code == value }
+internal fun languageLabel(value: String?) = languageOption(value)?.label ?: value.orEmpty()
 
 /** Script detection deliberately falls back to English for ambiguous Latin text. */
 internal fun automaticTargetLanguage(source: String, preferred: String): String {
     val scripts = source.codePoints().toArray().map { Character.UnicodeScript.of(it) }
     val candidates = listOf(
-        "Japanese" to scripts.count { it == Character.UnicodeScript.HIRAGANA || it == Character.UnicodeScript.KATAKANA },
-        "Korean" to scripts.count { it == Character.UnicodeScript.HANGUL },
-        "Chinese" to scripts.count { it == Character.UnicodeScript.HAN },
-        "Russian" to scripts.count { it == Character.UnicodeScript.CYRILLIC },
-        "Arabic" to scripts.count { it == Character.UnicodeScript.ARABIC },
+        "ja" to scripts.count { it == Character.UnicodeScript.HIRAGANA || it == Character.UnicodeScript.KATAKANA },
+        "ko" to scripts.count { it == Character.UnicodeScript.HANGUL },
+        "zh-Hans" to scripts.count { it == Character.UnicodeScript.HAN },
+        "ru" to scripts.count { it == Character.UnicodeScript.CYRILLIC },
+        "ar" to scripts.count { it == Character.UnicodeScript.ARABIC },
     )
     // Kanji in Japanese should not turn a Japanese author's document into a Chinese target.
     val japanese = candidates.first().second > 0
-    return candidates.filter { it.first != preferred && it.second > 0 && !(japanese && it.first == "Chinese") }
-        .maxByOrNull { it.second }?.first ?: "English"
+    return candidates.filter { it.first != preferred && it.second > 0 && !(japanese && it.first == "zh-Hans") }
+        .maxByOrNull { it.second }?.first ?: "en"
 }
 
 internal fun TranslationPreferences.resolvedTarget(source: String): String =
@@ -426,15 +447,26 @@ internal fun TranslationPreferences.previewLanguage(source: String): String =
     if (previewPreferred) preferredLanguage else resolvedTarget(source)
 
 
+/** Keep the popup wide enough for native names while the closed control displays a code. */
+internal class TranslationLanguageComboBox(values: Array<String> = emptyArray()) : ComboBox<String>(values) {
+    override fun getMinimumPopupWidth(): Int {
+        val list = javax.swing.JList(model).apply { font = this@TranslationLanguageComboBox.font }
+        val contentWidth = (0 until itemCount).maxOfOrNull { index ->
+            renderer.getListCellRendererComponent(list, getItemAt(index), index, false, false).preferredSize.width
+        } ?: 0
+        return maxOf(super.getMinimumPopupWidth(), contentWidth + insets.left + insets.right + JBUI.scale(24))
+    }
+}
+
 internal class TranslationLanguagePanel(
     private val settings: TranslationPreferences,
     onChange: () -> Unit,
     onClearCache: () -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private val toolbar = OverflowToolbar()
-    private val preferred = ComboBox(translationLanguages)
-    private val target = ComboBox(arrayOf("Auto") + translationLanguages)
-    private val preview = ComboBox<String>()
+    private val preferred = TranslationLanguageComboBox(translationLanguages)
+    private val target = TranslationLanguageComboBox(arrayOf("Auto") + translationLanguages)
+    private val preview = TranslationLanguageComboBox()
     private val clearCache = javax.swing.JButton(com.intellij.icons.AllIcons.Actions.Refresh).apply {
         isEnabled = false
         preferredSize = JBUI.size(24, 24)
@@ -449,18 +481,37 @@ internal class TranslationLanguagePanel(
     private var updatingPreview = false
 
     init {
+        listOf(preferred, target, preview).forEach { combo ->
+            // Wide-popup combos truncate long String values while measuring their initial size.
+            // Keep the complete language key so the renderer can resolve its compact code.
+            combo.setMinLength(Int.MAX_VALUE)
+            val standardRenderer = combo.renderer
+            combo.renderer = ListCellRenderer { list, value, index, selected, focused ->
+                val label = if (index < 0) languageOption(value)?.displayCode ?: value.orEmpty() else languageLabel(value)
+                standardRenderer.getListCellRendererComponent(list, label, index, selected, focused)
+            }
+            fun updateSelectionPresentation() {
+                val value = combo.selectedItem as? String
+                combo.toolTipText = if (value == "Auto") "Auto-detect target language" else languageLabel(value)
+                // Measure the closed control using its current code, independently of popup rows.
+                combo.prototypeDisplayValue = value ?: "en"
+                combo.revalidate()
+            }
+            combo.addActionListener { updateSelectionPresentation() }
+            updateSelectionPresentation()
+        }
         preferred.selectedItem = settings.preferredLanguage
         target.selectedItem = settings.targetLanguage
         preferred.accessibleContext.accessibleName = "Preferred language"
         target.accessibleContext.accessibleName = "Translation target language"
-        target.toolTipText = "Auto-detect target language"
+        target.toolTipText = if (settings.targetLanguage == "Auto") "Auto-detect target language" else languageLabel(settings.targetLanguage)
         border = JBUI.Borders.empty(6)
         fun group(label: String, control: javax.swing.JComponent) = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
             isOpaque = false
             add(JBLabel(label), BorderLayout.WEST)
             add(control, BorderLayout.CENTER)
         }
-        fun choices(combo: ComboBox<String>) = (0 until combo.itemCount).map { combo.getItemAt(it).let { it to it } }
+        fun choices(combo: ComboBox<String>) = (0 until combo.itemCount).map { combo.getItemAt(it).let { languageLabel(it) to it } }
         toolbar.addItem(group("Preferred", preferred)) {
             selectionMenu("Preferred: ${preferred.selectedItem}", choices(preferred), preferred.selectedItem as? String) {
                 preferred.selectedItem = it
@@ -518,7 +569,7 @@ internal class TranslationLanguagePanel(
     }
 
     fun updateTarget(language: String) {
-        val options = listOf(settings.preferredLanguage, language).distinct()
+        val options = listOf(settings.preferredLanguage, language).distinct().sortedBy { languageOption(it)?.code ?: it }
         updatingPreview = true
         try {
             if ((0 until preview.itemCount).map { preview.getItemAt(it) } != options) {
@@ -527,7 +578,7 @@ internal class TranslationLanguagePanel(
             }
             preview.selectedItem = if (settings.previewPreferred) settings.preferredLanguage else language
             preview.isEnabled = options.size > 1
-            preview.toolTipText = "Preview language"
+            preview.toolTipText = languageLabel(preview.selectedItem as? String)
         } finally { updatingPreview = false }
     }
 }
@@ -659,7 +710,8 @@ internal class TokenUsageLabel : JBLabel() {
         val rows = sessions.sortedByDescending { it.startedAt }.map { session ->
             val usage = session.usage
             arrayOf<Any>(dateFormat.format(java.time.Instant.ofEpochMilli(session.startedAt)),
-                session.targetLanguage.ifBlank { "Unknown" }, session.model.ifBlank { "Default" },
+                languageOption(session.targetLanguage)?.displayCode ?: "—",
+                session.model.ifBlank { "Default" },
                 usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, usage.totalTokens)
         }.toTypedArray()
         val table = com.intellij.ui.table.JBTable(object : javax.swing.table.DefaultTableModel(

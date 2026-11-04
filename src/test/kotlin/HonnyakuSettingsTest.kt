@@ -8,13 +8,13 @@ class HonnyakuSettingsTest {
         val preferences = HonnyakuPreferences()
         preferences.state.apply {
             model = "  chosen-model  "
-            preferredLanguage = "English"
+            preferredLanguage = "en"
         }
         val restored = HonnyakuPreferences()
         restored.loadState(preferences.state.copy())
         assertEquals(HonnyakuPreferences.SettingsState(
             model = "chosen-model",
-            preferredLanguage = "English",
+            preferredLanguage = "en",
         ), restored.state)
     }
 
@@ -25,23 +25,55 @@ class HonnyakuSettingsTest {
         val first = TranslationPreferences(global, firstState)
         val second = TranslationPreferences(global, secondState)
         first.model = "chosen-model"
-        first.preferredLanguage = "English"
-        first.targetLanguage = "French"
+        first.preferredLanguage = "en"
+        first.targetLanguage = "fr"
         first.previewPreferred = true
         assertEquals("chosen-model", second.model)
-        assertEquals("English", second.preferredLanguage)
+        assertEquals("en", second.preferredLanguage)
         assertEquals("Auto", second.targetLanguage)
         assertFalse(second.previewPreferred)
-        assertEquals(HonnyakuSettings.SettingsState("French", true), firstState.copy())
+        assertEquals(HonnyakuSettings.SettingsState("fr", true), firstState.copy())
+    }
+
+    @Test fun `unsupported language preferences fall back to defaults`() {
+        for (language in listOf("Japanese", "English", "Chinese", "Chinese (Traditional, Taiwan)", "unsupported", "")) {
+            val preferences = TranslationPreferences(
+                HonnyakuPreferences.SettingsState(preferredLanguage = language),
+                HonnyakuSettings.SettingsState(targetLanguage = language),
+            )
+            assertEquals("ja", preferences.preferredLanguage)
+            assertEquals("Auto", preferences.targetLanguage)
+        }
+    }
+
+    @Test fun `traditional Chinese target reaches server and preview`() {
+        val preferences = TranslationPreferences(
+            HonnyakuPreferences.SettingsState(), HonnyakuSettings.SettingsState(),
+        )
+        preferences.targetLanguage = "zh-Hant"
+        val language = preferences.resolvedTarget("source")
+        assertEquals("zh-Hant",
+            translationInitializationOptions("model", emptyList(), language)["targetLanguage"])
+        assertEquals("zh-Hant", languageOption(language)?.code)
+        assertEquals("繁體中文 (ZH-HANT)", languageLabel(language))
+        assertEquals(language, preferences.previewLanguage("source"))
+    }
+
+    @Test fun `unsupported cached languages are ignored while supported results remain`() {
+        val storage = TranslationHistory()
+        val valid = result()
+        storage.save(listOf(valid.copy(targetLanguage = "Chinese"), valid,
+            valid.copy(targetLanguage = "unsupported")))
+        assertEquals(listOf(valid), storage.read())
     }
 
     private val uri = "file:///a.md"
-    private fun result(restored: Boolean = false) = TranslationUpdate(uri, 1, "English",
+    private fun result(restored: Boolean = false) = TranslationUpdate(uri, 1, "en",
         listOf(ParagraphTranslation("原文", "Text", null)), restored = restored)
 
     @Test fun `saving translations and usage preserves both in the same state`() {
         val storage = TranslationHistory()
-        val session = TranslationUsageSession("first", uri, "model", "English", 1, TranslationTokenUsage(totalTokens = 100))
+        val session = TranslationUsageSession("first", uri, "model", "en", 1, TranslationTokenUsage(totalTokens = 100))
         storage.save(listOf(result()))
         storage.saveUsage(listOf(session))
         storage.save(listOf(result().copy(version = 2)))
@@ -91,7 +123,7 @@ class TranslationScrollMappingTest {
     }
 
     private fun result(vararg paragraphs: ParagraphTranslation) =
-        TranslationUpdate("file:///a.md", 1, "English", paragraphs.toList())
+        TranslationUpdate("file:///a.md", 1, "en", paragraphs.toList())
 
     private fun paragraph(source: String, translated: String = "translated") =
         ParagraphTranslation(source, translated, null)

@@ -98,7 +98,7 @@ class HonnyakuViewModelTest {
     @Test fun `usage persists across reload and restored translations do not charge it again`() {
         val storage = TranslationHistory()
         val model = HonnyakuViewModel(saveSessions = storage::saveUsage)
-        model.beginUsageSession("first", "model", "English")
+        model.beginUsageSession("first", "model", "en")
         model.receiveTranslation(translation(a).copy(pending = true), "first")
         model.receiveUsage(TokenUsageUpdate(totalTokens = 100), "first")
         // Persist during translation, even if inference is subsequently interrupted.
@@ -108,7 +108,7 @@ class HonnyakuViewModelTest {
         assertEquals(100L, restored.usage(a)?.totalTokens)
         restored.receiveTranslation(translation(a).copy(restored = true, tokenUsage = TranslationTokenUsage(totalTokens = 100)))
         assertEquals(100L, restored.usage(a)?.totalTokens)
-        restored.beginUsageSession("second", "model", "French")
+        restored.beginUsageSession("second", "model", "fr")
         restored.receiveUsage(TokenUsageUpdate(a, totalTokens = 20), "second")
         assertEquals(120L, restored.usage(a)?.totalTokens)
         assertEquals(2, reloaded.readUsage().size)
@@ -116,8 +116,8 @@ class HonnyakuViewModelTest {
 
     @Test fun `unkeyed notifications from separate connections never mix`() {
         val model = HonnyakuViewModel()
-        model.beginUsageSession("first", "model", "English")
-        model.beginUsageSession("second", "model", "French")
+        model.beginUsageSession("first", "model", "en")
+        model.beginUsageSession("second", "model", "fr")
         model.receiveUsage(TokenUsageUpdate(totalTokens = 100), "first")
         model.receiveUsage(TokenUsageUpdate(totalTokens = 20), "second")
         model.receiveTranslation(translation(a).copy(uri = "file:///b.md"), "second")
@@ -130,17 +130,17 @@ class HonnyakuViewModelTest {
         val storage = TranslationHistory()
         val model = HonnyakuViewModel(saveHistory = storage::save, saveSessions = storage::saveUsage)
         val english = translation(a)
-        val french = translation(a, "fr").copy(targetLanguage = "French")
+        val french = translation(a, "fr").copy(targetLanguage = "fr")
         val otherFile = translation(b)
         model.receiveTranslation(english)
         model.receiveTranslation(french)
         model.receiveTranslation(otherFile)
         model.receiveUsage(TokenUsageUpdate(a, totalTokens = 100))
-        model.clearTranslationCache("file:/a.md", "French")
+        model.clearTranslationCache("file:/a.md", "fr")
         assertEquals(listOf(english), model.history(a))
         assertEquals(english, model.translation(a))
         assertEquals(listOf(otherFile), model.history(b))
-        model.clearTranslationCache(a, "English")
+        model.clearTranslationCache(a, "en")
         assertNull(model.translation(a))
         val restored = HonnyakuViewModel(storage.read(), restoredSessions = storage.readUsage())
         assertTrue(restored.history(a).isEmpty())
@@ -153,7 +153,7 @@ class HonnyakuViewModelTest {
     private val a = "file:///a.md"
     private val b = "file:///b.md"
     private fun translation(uri: String, text: String = "translated") =
-        TranslationUpdate(uri, 1, "English", listOf(ParagraphTranslation("source", text, null)))
+        TranslationUpdate(uri, 1, "en", listOf(ParagraphTranslation("source", text, null)))
 
     @Test
     fun `unkeyed usage belongs to completed translation even when another editor is selected`() {
@@ -235,19 +235,19 @@ class HonnyakuViewModelTest {
 
     @Test fun `preview uses only history for the selected language`() {
         val model = HonnyakuViewModel()
-        model.receiveTranslation(TranslationUpdate("file:///a.md", 1, "English", listOf(ParagraphTranslation("原文", "English text", null))))
-        model.receiveTranslation(TranslationUpdate("file:///a.md", 1, "French", listOf(ParagraphTranslation("原文", "Texte français", null))))
+        model.receiveTranslation(TranslationUpdate("file:///a.md", 1, "en", listOf(ParagraphTranslation("原文", "English text", null))))
+        model.receiveTranslation(TranslationUpdate("file:///a.md", 1, "fr", listOf(ParagraphTranslation("原文", "Texte français", null))))
         val history = model.history("file:///a.md")
-        assertEquals("English text", translationDocument("原文", history.filter { it.targetLanguage == "English" }).text)
-        assertEquals("原文", translationDocument("原文", history.filter { it.targetLanguage == "Japanese" }).text)
+        assertEquals("English text", translationDocument("原文", history.filter { it.targetLanguage == "en" }).text)
+        assertEquals("原文", translationDocument("原文", history.filter { it.targetLanguage == "ja" }).text)
     }
 }
 
 class TranslationActivityTest {
     private val a = "file:///a.md"
-    private fun pending(version: Int, vararg texts: String) = TranslationUpdate(a, version, "English",
+    private fun pending(version: Int, vararg texts: String) = TranslationUpdate(a, version, "en",
         texts.map { ParagraphTranslation(it, null, null) }, pending = true)
-    private fun completed(version: Int, source: String, text: String?) = TranslationUpdate(a, version, "English",
+    private fun completed(version: Int, source: String, text: String?) = TranslationUpdate(a, version, "en",
         listOf(ParagraphTranslation(source, text, if (text == null) "failure" else null)))
 
     @Test

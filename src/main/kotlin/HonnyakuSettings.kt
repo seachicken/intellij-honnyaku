@@ -19,7 +19,7 @@ import com.intellij.openapi.vfs.VfsUtilCore
 class HonnyakuPreferences : PersistentStateComponent<HonnyakuPreferences.SettingsState> {
     data class SettingsState(
         var model: String = "",
-        var preferredLanguage: String = "Japanese",
+        var preferredLanguage: String = "ja",
     )
     private var settingsState = SettingsState()
     override fun getState(): SettingsState = settingsState
@@ -36,10 +36,10 @@ class TranslationPreferences(
         get() = global.model
         set(value) { global.model = value }
     var preferredLanguage: String
-        get() = global.preferredLanguage
+        get() = global.preferredLanguage.takeIf { languageOption(it) != null } ?: "ja"
         set(value) { global.preferredLanguage = value }
     var targetLanguage: String
-        get() = local.targetLanguage
+        get() = local.targetLanguage.takeIf { it == "Auto" || languageOption(it) != null } ?: "Auto"
         set(value) { local.targetLanguage = value }
     var previewPreferred: Boolean
         get() = local.previewPreferred
@@ -98,7 +98,8 @@ class TranslationHistory : PersistentStateComponent<TranslationHistory.HistorySt
     override fun loadState(state: HistoryState) { historyState = state }
     fun save(results: List<TranslationUpdate>) { historyState = historyState.copy(results = Gson().toJson(results)) }
     fun read(): List<TranslationUpdate> = runCatching {
-        Gson().fromJson(historyState.results, Array<TranslationUpdate>::class.java)?.toList().orEmpty()
+        Gson().fromJson(historyState.results, Array<TranslationUpdate>::class.java)
+            ?.filter { languageOption(it.targetLanguage) != null }.orEmpty()
     }.getOrDefault(emptyList())
     fun saveUsage(sessions: List<TranslationUsageSession>) {
         historyState = historyState.copy(sessions = Gson().toJson(sessions))
