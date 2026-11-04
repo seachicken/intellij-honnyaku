@@ -53,12 +53,11 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Improvements</h2>
         <ul>
-            <li>Add support for translating plain text and code comments</li>
-            <li>Translate only visible Markdown content and retry failed translation requests</li>
-            <li>Add preferred language selection and share language and model settings across projects</li>
-            <li>Preserve translation token usage across sessions</li>
-            <li>Match the translation preview font size to the source editor</li>
-            <li>Update the tool window icon and bundled Honnyaku to 0.2.1</li>
+            <li>Add support for translating AsciiDoc files</li>
+            <li>Add a retranslate action to clear cached translations for the current file and preview language</li>
+            <li>Keep language, model, and token usage controls accessible through overflow menus in narrow tool windows</li>
+            <li>Improve translation request recovery when the translation server stops</li>
+            <li>Update bundled Honnyaku to 0.2.2</li>
         </ul>
     """.trimIndent()
     nativeVariants {
