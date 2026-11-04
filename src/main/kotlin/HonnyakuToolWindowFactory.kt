@@ -1,5 +1,8 @@
 package honnyaku
 
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.application.ApplicationManager
@@ -48,6 +51,17 @@ import javax.swing.JPanel
 import javax.swing.ListCellRenderer
 import javax.swing.SwingUtilities
 import javax.swing.Timer
+import com.intellij.ide.DataManager
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import java.awt.Container
+import java.awt.Dimension
+import java.awt.LayoutManager
+import javax.swing.JButton
+import javax.swing.JComponent
 
 internal class TranslationScrollListener(
     private val preview: Editor,
@@ -126,7 +140,19 @@ class HonnyakuTranslationPanel(
     private var activeLanguage: String? = null
     private var syncingScroll = false
     private var previewScrolledManually = false
-    private val languagePanel = TranslationLanguagePanel(modelSettings) { refreshSelectedFile() }
+    private var clearingCache = false
+    private val languagePanel = TranslationLanguagePanel(modelSettings, { refreshSelectedFile() }) {
+        val uri = displayedUri
+        val language = activeLanguage
+        if (uri != null && language != null && !clearingCache) {
+            clearingCache = true
+            refreshSelectedFile()
+            project.service<TranslationSessionController>().clearTranslationCache(uri, language) {
+                clearingCache = false
+                refreshSelectedFile()
+            }
+        }
+    }
     private val topScrollSpace = viewer.inlayModel.addBlockElement(0, true, true, 0,
         object : com.intellij.openapi.editor.EditorCustomElementRenderer {
             override fun calcWidthInPixels(inlay: com.intellij.openapi.editor.Inlay<*>) = 1
@@ -142,8 +168,20 @@ class HonnyakuTranslationPanel(
                 JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0),
                 JBUI.Borders.empty(6, 10),
             )
-            add(modelSelector, BorderLayout.WEST)
-            add(usageLabel, BorderLayout.EAST)
+            add(OverflowToolbar(JBUI.scale(12)).apply {
+                addItem(modelSelector) { modelSelector.overflowMenu() }
+                addItem(usageLabel, alignRight = true) {
+                    object : DumbAwareAction(usageLabel.text) {
+                        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                        override fun update(event: AnActionEvent) {
+                            event.presentation.isEnabled = viewModel.usageSessions(viewModel.selectedUri).isNotEmpty()
+                        }
+                        override fun actionPerformed(event: AnActionEvent) {
+                            usageLabel.showSessions(this@apply)
+                        }
+                    }
+                }
+            }, BorderLayout.CENTER)
             add(loadingStatus, BorderLayout.NORTH)
         }, BorderLayout.SOUTH)
         unsubscribe = viewModel.subscribe { refreshSelectedFile() }
@@ -273,6 +311,8 @@ class HonnyakuTranslationPanel(
             viewModel.resetRuntimeState()
             restartServer()
         }
+        languagePanel.updateCacheAction(language, !clearingCache && sourceDocument != null &&
+            viewModel.history(uri).any { it.targetLanguage == language })
         projection = translationDocument(sourceDocument?.text.orEmpty(), viewModel.history(uri).filter {
             it.targetLanguage == language
         })
@@ -292,7 +332,7 @@ class HonnyakuTranslationPanel(
         loadingLabel.cursor = java.awt.Cursor.getPredefinedCursor(
             if (translationErrorDetails.isNotBlank()) java.awt.Cursor.HAND_CURSOR else java.awt.Cursor.DEFAULT_CURSOR,
         )
-        loadingLabel.toolTipText = if (pending > 0) "Visible lines are waiting for translation results" else translationErrorDetails
+        loadingLabel.toolTipText = if (pending > 0) "Translating…" else translationErrorDetails
         if (editor != null && !previewScrolledManually) syncWithEditor(editor)
         if (previewScrolledManually) project.service<TranslationSessionController>().queueVisibleTranslation()
     }
@@ -389,25 +429,70 @@ internal fun TranslationPreferences.previewLanguage(source: String): String =
 internal class TranslationLanguagePanel(
     private val settings: TranslationPreferences,
     onChange: () -> Unit,
-) : JPanel(FlowLayout(FlowLayout.LEADING, JBUI.scale(6), JBUI.scale(6))) {
+    onClearCache: () -> Unit = {},
+) : JPanel(BorderLayout()) {
+    private val toolbar = OverflowToolbar()
+    private val preferred = ComboBox(translationLanguages)
     private val target = ComboBox(arrayOf("Auto") + translationLanguages)
     private val preview = ComboBox<String>()
+    private val clearCache = javax.swing.JButton(com.intellij.icons.AllIcons.Actions.Refresh).apply {
+        isEnabled = false
+        preferredSize = JBUI.size(24, 24)
+        margin = JBUI.emptyInsets()
+        isFocusable = true
+        isOpaque = false
+        isContentAreaFilled = false
+        isBorderPainted = false
+        accessibleContext.accessibleName = "Retranslate"
+        addActionListener { onClearCache() }
+    }
     private var updatingPreview = false
 
     init {
-        val preferred = ComboBox(translationLanguages)
         preferred.selectedItem = settings.preferredLanguage
         target.selectedItem = settings.targetLanguage
         preferred.accessibleContext.accessibleName = "Preferred language"
         target.accessibleContext.accessibleName = "Translation target language"
-        target.toolTipText = "Auto: detect a different script in the document; ambiguous text defaults to English. Choose Latin languages explicitly."
-        add(JBLabel("Preferred"))
-        add(preferred)
-        add(JBLabel("Target"))
-        add(target)
-        add(JBLabel("Preview"))
+        target.toolTipText = "Auto-detect target language"
+        border = JBUI.Borders.empty(6)
+        fun group(label: String, control: javax.swing.JComponent) = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            add(JBLabel(label), BorderLayout.WEST)
+            add(control, BorderLayout.CENTER)
+        }
+        fun choices(combo: ComboBox<String>) = (0 until combo.itemCount).map { combo.getItemAt(it).let { it to it } }
+        toolbar.addItem(group("Preferred", preferred)) {
+            selectionMenu("Preferred: ${preferred.selectedItem}", choices(preferred), preferred.selectedItem as? String) {
+                preferred.selectedItem = it
+            }
+        }
+        toolbar.addItem(group("Target", target)) {
+            selectionMenu("Target: ${target.selectedItem}", choices(target), target.selectedItem as? String) {
+                target.selectedItem = it
+            }
+        }
         preview.accessibleContext.accessibleName = "Preview language"
-        add(preview)
+        val previewControls = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            add(preview, BorderLayout.CENTER)
+            add(clearCache, BorderLayout.EAST)
+        }
+        toolbar.addItem(group("Preview", previewControls)) {
+            selectionMenu("Preview: ${preview.selectedItem}", choices(preview), preview.selectedItem as? String,
+                choicesEnabled = preview.isEnabled,
+                select = { preview.selectedItem = it },
+            ).apply {
+                addSeparator()
+                add(object : DumbAwareAction(clearCache.toolTipText, null, clearCache.icon) {
+                    override fun getActionUpdateThread() = ActionUpdateThread.EDT
+                    override fun update(event: AnActionEvent) {
+                        event.presentation.isEnabled = clearCache.isEnabled
+                    }
+                    override fun actionPerformed(event: AnActionEvent) { clearCache.doClick() }
+                })
+            }
+        }
+        add(toolbar, BorderLayout.CENTER)
         preferred.addActionListener {
             settings.preferredLanguage = preferred.selectedItem as String
             onChange()
@@ -427,6 +512,11 @@ internal class TranslationLanguagePanel(
         }
     }
 
+    fun updateCacheAction(language: String, enabled: Boolean) {
+        clearCache.isEnabled = enabled
+        clearCache.toolTipText = "Retranslate in $language"
+    }
+
     fun updateTarget(language: String) {
         val options = listOf(settings.preferredLanguage, language).distinct()
         updatingPreview = true
@@ -437,8 +527,7 @@ internal class TranslationLanguagePanel(
             }
             preview.selectedItem = if (settings.previewPreferred) settings.preferredLanguage else language
             preview.isEnabled = options.size > 1
-            preview.toolTipText = "Choose the preview language" +
-                if (settings.targetLanguage == "Auto") " · Auto target: $language" else ""
+            preview.toolTipText = "Preview language"
         } finally { updatingPreview = false }
     }
 }
@@ -513,15 +602,23 @@ internal class TranslationModelPanel(
         refreshPresentation()
     }
 
+    fun overflowMenu() = selectionMenu(
+        "Model: ${availableModel(settings.model)?.label() ?: settings.model}",
+        (0 until selector.itemCount).map { selector.getItemAt(it).let { id ->
+            id to (availableModel(id)?.label() ?: "Models unavailable")
+        } },
+        settings.model, selector.isEnabled,
+    ) { selector.selectedItem = it }
+
     private fun refreshPresentation() {
         selector.prototypeDisplayValue = null
         selector.prototypeDisplayValue = (0 until selector.itemCount).map { selector.getItemAt(it) }
             .maxByOrNull { availableModel(it)?.label()?.length ?: it.length }
         selector.toolTipText = catalog?.error ?: when {
-            reasoningEffort != null -> "Reasoning: $reasoningEffort · Reported by Codex"
-            availableModel(settings.model) != null -> "Reasoning: low · Supported by Codex and configured for translation"
-            catalog == null -> "Loading available models from Codex"
-            else -> "Select an available model supporting low reasoning"
+            reasoningEffort != null -> "Reasoning: $reasoningEffort"
+            availableModel(settings.model) != null -> "Reasoning: low"
+            catalog == null -> "Loading models…"
+            else -> "Select a model supporting low reasoning"
         }
         selector.accessibleContext.accessibleName = "Translation model: ${availableModel(settings.model)?.label() ?: settings.model}"
         selector.revalidate()
@@ -549,35 +646,40 @@ internal class TokenUsageLabel : JBLabel() {
 
             override fun mouseClicked(event: java.awt.event.MouseEvent) {
                 if (sessions.isEmpty()) return
-                val dateFormat = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-                    .withZone(java.time.ZoneId.systemDefault())
-                val rows = sessions.sortedByDescending { it.startedAt }.map { session ->
-                    val usage = session.usage
-                    arrayOf<Any>(dateFormat.format(java.time.Instant.ofEpochMilli(session.startedAt)),
-                        session.targetLanguage.ifBlank { "Unknown" }, session.model.ifBlank { "Default" },
-                        usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, usage.totalTokens)
-                }.toTypedArray()
-                val table = com.intellij.ui.table.JBTable(object : javax.swing.table.DefaultTableModel(
-                    rows, arrayOf("Started", "Target", "Model", "Input", "Cached input", "Output", "Total"),
-                ) {
-                    override fun isCellEditable(row: Int, column: Int) = false
-                })
-                val content = com.intellij.ui.components.JBScrollPane(table).apply {
-                    preferredSize = JBUI.size(850, 240)
-                }
-                com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
-                    .createComponentPopupBuilder(content, table).setTitle("Translation sessions · This file")
-                    .setResizable(true).setMovable(true).setRequestFocus(true).createPopup()
-                    .showUnderneathOf(this@TokenUsageLabel)
+                showSessions(this@TokenUsageLabel)
             }
         })
         updateUsage(null)
     }
 
+    fun showSessions(anchor: javax.swing.JComponent) {
+        if (sessions.isEmpty()) return
+        val dateFormat = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+            .withZone(java.time.ZoneId.systemDefault())
+        val rows = sessions.sortedByDescending { it.startedAt }.map { session ->
+            val usage = session.usage
+            arrayOf<Any>(dateFormat.format(java.time.Instant.ofEpochMilli(session.startedAt)),
+                session.targetLanguage.ifBlank { "Unknown" }, session.model.ifBlank { "Default" },
+                usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, usage.totalTokens)
+        }.toTypedArray()
+        val table = com.intellij.ui.table.JBTable(object : javax.swing.table.DefaultTableModel(
+            rows, arrayOf("Started", "Target", "Model", "Input", "Cached input", "Output", "Total"),
+        ) {
+            override fun isCellEditable(row: Int, column: Int) = false
+        })
+        val content = com.intellij.ui.components.JBScrollPane(table).apply {
+            preferredSize = JBUI.size(850, 240)
+        }
+        com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(content, table).setTitle("Translation sessions")
+            .setResizable(true).setMovable(true).setRequestFocus(true).createPopup()
+            .showUnderneathOf(anchor)
+    }
+
     fun updateUsage(usage: TranslationTokenUsage?, sessions: List<TranslationUsageSession> = emptyList()) {
         this.sessions = sessions
         text = "Total: ${usage?.summary() ?: "— tokens"}"
-        toolTipText = usage?.let { "File total · ${sessions.size} sessions · ${it.details()} · Click to view sessions" } ?: "No token usage yet"
+        toolTipText = usage?.let { "${sessions.size} sessions · Click for details" } ?: "No token usage yet"
         getAccessibleContext().accessibleName = "Total token usage: ${usage?.summary() ?: "unavailable"}"
         updateInteraction()
     }
@@ -651,5 +753,119 @@ internal class TranslationLoadingDecoration(private val editor: Editor) : Dispos
         editor.contentComponent.removeHierarchyListener(hierarchyListener)
         highlighters.forEach { editor.markupModel.removeHighlighter(it) }
         highlighters.clear()
+    }
+}
+
+/** Keep controls on one row; controls on the right move into the overflow menu first. */
+internal class OverflowToolbar(private val gap: Int = JBUI.scale(6)) : JPanel() {
+    private data class Item(val component: JComponent, val alignRight: Boolean, val menu: () -> AnAction)
+    private val items = mutableListOf<Item>()
+    private val overflow = JButton(com.intellij.icons.AllIcons.Actions.More).apply {
+        toolTipText = "More"
+        preferredSize = JBUI.size(24, 24)
+        margin = JBUI.emptyInsets()
+        isOpaque = false
+        isContentAreaFilled = false
+        isBorderPainted = false
+        accessibleContext.accessibleName = "More actions"
+        isVisible = false
+        addActionListener {
+            JBPopupFactory.getInstance().createActionGroupPopup(
+                null, overflowGroup(), DataManager.getInstance().getDataContext(this@OverflowToolbar),
+                JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true,
+            ).showUnderneathOf(this)
+        }
+    }
+
+    init {
+        isOpaque = false
+        add(overflow)
+        layout = object : LayoutManager {
+            override fun addLayoutComponent(name: String?, component: java.awt.Component?) = Unit
+            override fun removeLayoutComponent(component: java.awt.Component?) = Unit
+            override fun preferredLayoutSize(parent: Container): Dimension = Dimension(
+                items.sumOf { it.component.preferredSize.width } + gap * (items.size - 1).coerceAtLeast(0) +
+                    insets.left + insets.right,
+                rowHeight() + insets.top + insets.bottom,
+            )
+            override fun minimumLayoutSize(parent: Container) = Dimension(
+                overflow.preferredSize.width + insets.left + insets.right,
+                rowHeight() + insets.top + insets.bottom,
+            )
+
+            override fun layoutContainer(parent: Container) {
+                val available = (width - insets.left - insets.right).coerceAtLeast(0)
+                val visible = items.toMutableList()
+                fun requiredWidth() = visible.sumOf { it.component.preferredSize.width } +
+                    gap * (visible.size - 1).coerceAtLeast(0) +
+                    if (visible.size < items.size) overflow.preferredSize.width +
+                        (if (visible.isEmpty()) 0 else gap) else 0
+                for (item in items.asReversed()) {
+                    if (requiredWidth() <= available) break
+                    visible.remove(item)
+                }
+                overflow.isVisible = visible.size < items.size
+                var x = insets.left
+                val height = (height - insets.top - insets.bottom).coerceAtLeast(0)
+                for (item in items) {
+                    val component = item.component
+                    val show = item in visible
+                    // Don't strand keyboard focus on a control that just moved into the menu.
+                    if (!show && component.isVisible &&
+                        java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner?.let {
+                            javax.swing.SwingUtilities.isDescendingFrom(it, component)
+                        } == true) overflow.requestFocusInWindow()
+                    component.isVisible = show
+                    if (show) {
+                        val size = component.preferredSize
+                        if (item.alignRight) x = width - insets.right - size.width -
+                            (if (overflow.isVisible) overflow.preferredSize.width + gap else 0)
+                        component.setBounds(x, insets.top + (height - size.height).coerceAtLeast(0) / 2,
+                            size.width, size.height.coerceAtMost(height))
+                        x += size.width + gap
+                    }
+                }
+                if (overflow.isVisible) overflow.setBounds(
+                    (width - insets.right - overflow.preferredSize.width).coerceAtLeast(insets.left),
+                    insets.top, overflow.preferredSize.width.coerceAtMost(available), height,
+                )
+            }
+        }
+    }
+
+    private fun rowHeight() = (items.map { it.component.preferredSize.height } + overflow.preferredSize.height).max()
+
+    fun addItem(component: JComponent, alignRight: Boolean = false, menu: () -> AnAction) {
+        items.add(Item(component, alignRight, menu))
+        add(component)
+    }
+
+    internal fun overflowGroup() = DefaultActionGroup().apply {
+        items.filter { !it.component.isVisible }.forEach { add(it.menu()) }
+    }
+}
+
+/** Menu choices use the same selection callback as their inline control. */
+internal fun selectionMenu(
+    title: String,
+    choices: List<Pair<String, String>>,
+    selected: String?,
+    enabled: Boolean = true,
+    choicesEnabled: Boolean = enabled,
+    select: (String) -> Unit,
+): DefaultActionGroup = object : DefaultActionGroup(title, true), DumbAware {
+    override fun getActionUpdateThread() = ActionUpdateThread.EDT
+    override fun update(event: AnActionEvent) { event.presentation.isEnabled = enabled }
+}.apply {
+    choices.forEach { (value, label) ->
+        add(object : ToggleAction(label), DumbAware {
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+            override fun update(event: AnActionEvent) {
+                super.update(event)
+                event.presentation.isEnabled = choicesEnabled
+            }
+            override fun isSelected(event: AnActionEvent) = value == selected
+            override fun setSelected(event: AnActionEvent, state: Boolean) { if (state) select(value) }
+        })
     }
 }

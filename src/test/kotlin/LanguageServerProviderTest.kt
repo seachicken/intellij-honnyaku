@@ -23,6 +23,33 @@ class LanguageServerProviderTest {
         assertTrue(supportsRangeTranslation(mapOf("honnyakuRangeTranslation" to true)))
     }
 
+    @Test fun `cache deletion sends file and language and requires explicit server support`() {
+        assertFalse(supportsCacheDeletion(null))
+        assertFalse(supportsCacheDeletion(mapOf("honnyakuViewportTranslation" to true)))
+        assertTrue(supportsCacheDeletion(mapOf("honnyakuCacheDeletion" to true)))
+        assertTrue(supportsCacheDeletion(JsonParser.parseString("{\"honnyakuCacheDeletion\":true}")))
+        assertFalse(supportsCacheDeletion(JsonParser.parseString("{\"honnyakuCacheDeletion\":\"true\"}")))
+        val response = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}"
+        val input = "Content-Length: ${response.toByteArray().size}\r\n\r\n$response"
+        val output = ByteArrayOutputStream()
+        val launcher = Launcher.Builder<HonnyakuLanguageServer>()
+            .setLocalService(Any())
+            .setRemoteInterface(HonnyakuLanguageServer::class.java)
+            .setInput(ByteArrayInputStream(input.toByteArray()))
+            .setOutput(output)
+            .create()
+        val result = launcher.remoteProxy.clearTranslationCache(ClearTranslationCacheParams("file:///a.md", "Japanese"))
+        val listening = launcher.startListening()
+        try {
+            assertNull(result.get(5, TimeUnit.SECONDS))
+            val message = JsonParser.parseString(output.toString(Charsets.UTF_8).substringAfter("\r\n\r\n")).asJsonObject
+            assertEquals("honnyaku/clearTranslationCache", message["method"].asString)
+            val params = message["params"].asJsonObject
+            assertEquals("file:///a.md", params["uri"].asString)
+            assertEquals("Japanese", params["targetLanguage"].asString)
+        } finally { listening.cancel(true) }
+    }
+
     @Test fun `inline comment replacements preserve code and ignore stale ranges`() {
         val range = org.eclipse.lsp4j.Range(org.eclipse.lsp4j.Position(0, 8), org.eclipse.lsp4j.Position(0, 16))
         val update = TranslationUpdate("file:///a.kt", 1, "English", listOf(ParagraphTranslation("// hello", "// こんにちは", null, range)))

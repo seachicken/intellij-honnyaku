@@ -38,6 +38,15 @@ class HonnyakuViewModel(
     fun translation(uri: String?): TranslationUpdate? = uri?.let { translations[key(it)] }
     fun history(uri: String?): List<TranslationUpdate> =
         if (uri == null) emptyList() else history.filter { key(it.uri) == key(uri) }
+    fun clearTranslationCache(uri: String, language: String) {
+        val normalized = key(uri)
+        history.removeAll { key(it.uri) == normalized && it.targetLanguage == language }
+        translations.remove(normalized)
+        history.lastOrNull { key(it.uri) == normalized }?.let { translations[normalized] = it }
+        saveHistory(history.toList())
+        changed()
+    }
+
     fun usage(uri: String?): TranslationTokenUsage? = ledger.total(uri)
     fun usageSessions(uri: String?): List<TranslationUsageSession> = ledger.sessions(uri)
     private fun recordUsage(id: String, uri: String, usage: TranslationTokenUsage, language: String = "") {

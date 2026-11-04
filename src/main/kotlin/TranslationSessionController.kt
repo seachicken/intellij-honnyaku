@@ -37,13 +37,19 @@ class TranslationSessionController(private val project: Project) : Disposable {
     private data class Attempt(val server: LspServer, val params: VisibleTranslationParams)
     private var lastAttempt: Attempt? = null
     private val retries = TranslationRetryBudget<Attempt>()
-    private var inFlight = false
+    private class Request(val server: LspServer, val cancelled: () -> Unit = {})
+    private var activeRequest: Request? = null
+    private var pendingCacheClear: (() -> Unit)? = null
     private var previewViewport: (() -> TranslationViewport?)? = null
     private val viewportTimer = translationViewportTimer { translateVisible() }
     private val visibility = TranslationVisibilityGate(
         onShow = { LspServerManager.getInstance(project).startServersIfNeeded(LanguageServerProvider::class.java) },
         onHide = {
             viewportTimer.stop()
+            cancelActiveRequest()
+            val pending = pendingCacheClear
+            pendingCacheClear = null
+            pending?.invoke()
             lastAttempt = null
             retries.reset()
             ApplicationManager.getApplication().invokeLater {
@@ -106,7 +112,17 @@ class TranslationSessionController(private val project: Project) : Disposable {
     }
 
     private fun translateVisible() {
-        if (project.isDisposed || !isVisible || inFlight) return
+        if (project.isDisposed || !isVisible) return
+        releaseStoppedRequest()
+        if (activeRequest != null) return
+        val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
+            .firstOrNull { it.state == LspServerState.Running } ?: return
+        val pending = pendingCacheClear
+        if (pending != null) {
+            pendingCacheClear = null
+            pending()
+            return
+        }
         val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return
         val document = editor.document
         val file = FileDocumentManager.getInstance().getFile(document) ?: return
@@ -117,8 +133,6 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val first = preview?.firstLine ?: editor.xyToLogicalPosition(Point(area.x, area.y)).line
         val last = preview?.lastLine ?: editor.xyToLogicalPosition(Point(area.x, area.y + area.height - 1)).line
         val window = translationLineWindow(first, last, document.lineCount)
-        val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
-            .firstOrNull { it.state == LspServerState.Running } ?: return
         if (!supportsViewportTranslation(server.initializeResult?.capabilities?.experimental)) return
         if (!isWholeDocumentTranslation(file) &&
             !supportsRangeTranslation(server.initializeResult?.capabilities?.experimental)) return
@@ -137,7 +151,8 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val attempt = Attempt(server, params)
         if (lastAttempt == attempt || !retries.canAttempt(attempt)) return
         lastAttempt = attempt
-        inFlight = true
+        val request = Request(server)
+        activeRequest = request
         // Only one request is outstanding. Once it completes, recompute the viewport
         // rather than draining a queue of positions passed during a fast scroll.
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -152,15 +167,89 @@ class TranslationSessionController(private val project: Project) : Disposable {
                 }
             } finally {
                 ApplicationManager.getApplication().invokeLater {
-                    inFlight = false
+                    // A stopped server's completion must not finish a newer server's request.
+                    if (activeRequest !== request) return@invokeLater
+                    activeRequest = null
                     if (failed && lastAttempt == attempt) {
                         lastAttempt = null
                         retries.recordFailure(attempt)
                     }
-                    if (!project.isDisposed) queueVisibleTranslation()
+                    if (!project.isDisposed) {
+                        queueVisibleTranslation()
+                    }
                 }
             }
         }
+    }
+
+    fun clearTranslationCache(uri: String, language: String, completed: () -> Unit) {
+        if (project.isDisposed || !isVisible) { completed(); return }
+        releaseStoppedRequest()
+        if (activeRequest != null) {
+            pendingCacheClear = { clearTranslationCache(uri, language, completed) }
+            viewportTimer.stop()
+            return
+        }
+        val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
+            .firstOrNull { it.state == LspServerState.Running }
+        if (server == null) {
+            com.intellij.notification.NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
+                .createNotification("Translation server unavailable", "Try again when the server is ready.",
+                    com.intellij.notification.NotificationType.WARNING).notify(project)
+            completed()
+            queueVisibleTranslation()
+            return
+        }
+        if (!supportsCacheDeletion(server.initializeResult?.capabilities?.experimental)) {
+            com.intellij.notification.NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
+                .createNotification("Server update required",
+                    "Update Honnyaku to clear the cache.",
+                    com.intellij.notification.NotificationType.WARNING).notify(project)
+            completed()
+            queueVisibleTranslation()
+            return
+        }
+        val request = Request(server, completed)
+        activeRequest = request
+        viewportTimer.stop()
+        ApplicationManager.getApplication().executeOnPooledThread {
+            var failure: Exception? = null
+            try {
+                server.sendRequestSync(150_000) {
+                    (it as HonnyakuLanguageServer).clearTranslationCache(ClearTranslationCacheParams(uri, language))
+                }
+            } catch (exception: Exception) { failure = exception }
+            ApplicationManager.getApplication().invokeLater {
+                if (activeRequest !== request) return@invokeLater
+                activeRequest = null
+                if (!project.isDisposed) {
+                    if (failure == null) {
+                        project.service<HonnyakuSettings>().viewModel.clearTranslationCache(uri, language)
+                    } else {
+                        com.intellij.notification.NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
+                            .createNotification("Could not clear translation cache",
+                                failure?.message ?: "Please try again.",
+                                com.intellij.notification.NotificationType.ERROR).notify(project)
+                    }
+                    completed()
+                    queueVisibleTranslation(force = failure == null)
+                }
+            }
+        }
+    }
+
+    internal fun serverStopped() {
+        releaseStoppedRequest()
+    }
+
+    private fun releaseStoppedRequest() {
+        if (activeRequest?.server?.state != LspServerState.Running) cancelActiveRequest()
+    }
+
+    private fun cancelActiveRequest() {
+        val request = activeRequest
+        activeRequest = null
+        request?.cancelled?.invoke()
     }
 
     fun track(process: OSProcessHandler) {

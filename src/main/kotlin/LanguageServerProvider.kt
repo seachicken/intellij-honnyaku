@@ -62,7 +62,10 @@ private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerD
     override val lspServerListener: LspServerListener = object : LspServerListener {
         override fun serverStopped(shutdownNormally: Boolean) {
             ApplicationManager.getApplication().invokeLater {
-                if (!project.isDisposed) project.service<HonnyakuSettings>().viewModel.clearActivity()
+                if (!project.isDisposed) {
+                    project.service<TranslationSessionController>().serverStopped()
+                    project.service<HonnyakuSettings>().viewModel.clearActivity()
+                }
             }
         }
 
@@ -117,8 +120,21 @@ private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerD
 }
 
 interface HonnyakuLanguageServer : LanguageServer {
+    @JsonRequest("honnyaku/clearTranslationCache")
+    fun clearTranslationCache(params: ClearTranslationCacheParams): CompletableFuture<Any?>
+
     @JsonRequest("honnyaku/translateVisible")
     fun translateVisible(params: VisibleTranslationParams): CompletableFuture<Any?>
+}
+
+data class ClearTranslationCacheParams(val uri: String, val targetLanguage: String)
+
+internal fun supportsCacheDeletion(experimental: Any?): Boolean = when (experimental) {
+    is Map<*, *> -> experimental["honnyakuCacheDeletion"] == true
+    is JsonObject -> experimental.get("honnyakuCacheDeletion")?.let {
+        it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean
+    } == true
+    else -> false
 }
 
 data class VisibleTranslationDocument(val uri: String, val version: Int, val text: String)

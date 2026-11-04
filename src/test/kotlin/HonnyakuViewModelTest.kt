@@ -126,6 +126,30 @@ class HonnyakuViewModelTest {
         assertEquals(20L, model.usage("file:///b.md")?.totalTokens)
     }
 
+    @Test fun `cache deletion removes only selected file and language and retains usage after reload`() {
+        val storage = TranslationHistory()
+        val model = HonnyakuViewModel(saveHistory = storage::save, saveSessions = storage::saveUsage)
+        val english = translation(a)
+        val french = translation(a, "fr").copy(targetLanguage = "French")
+        val otherFile = translation(b)
+        model.receiveTranslation(english)
+        model.receiveTranslation(french)
+        model.receiveTranslation(otherFile)
+        model.receiveUsage(TokenUsageUpdate(a, totalTokens = 100))
+        model.clearTranslationCache("file:/a.md", "French")
+        assertEquals(listOf(english), model.history(a))
+        assertEquals(english, model.translation(a))
+        assertEquals(listOf(otherFile), model.history(b))
+        model.clearTranslationCache(a, "English")
+        assertNull(model.translation(a))
+        val restored = HonnyakuViewModel(storage.read(), restoredSessions = storage.readUsage())
+        assertTrue(restored.history(a).isEmpty())
+        assertEquals(listOf(otherFile), restored.history(b))
+        assertEquals(100L, restored.usage(a)?.totalTokens)
+        model.receiveTranslation(translation(a, "retried"))
+        assertEquals("retried", model.translation(a)?.translations?.single()?.text)
+    }
+
     private val a = "file:///a.md"
     private val b = "file:///b.md"
     private fun translation(uri: String, text: String = "translated") =
