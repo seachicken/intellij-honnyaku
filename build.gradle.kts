@@ -53,11 +53,9 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Improvements</h2>
         <ul>
-            <li>Add support for translating AsciiDoc files</li>
-            <li>Add a retranslate action to clear cached translations for the current file and preview language</li>
-            <li>Keep language, model, and token usage controls accessible through overflow menus in narrow tool windows</li>
-            <li>Improve translation request recovery when the translation server stops</li>
-            <li>Update bundled Honnyaku to 0.2.2</li>
+            <li>Show compact language codes in language selectors and token usage history</li>
+            <li>Display native language names in selection menus and tooltips</li>
+            <li>Add separate Simplified and Traditional Chinese language options</li>
         </ul>
     """.trimIndent()
     nativeVariants {
