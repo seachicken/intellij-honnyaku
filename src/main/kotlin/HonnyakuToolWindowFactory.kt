@@ -311,7 +311,7 @@ class HonnyakuTranslationPanel(
             viewModel.resetRuntimeState()
             restartServer()
         }
-        languagePanel.updateCacheAction(language, !clearingCache && sourceDocument != null &&
+        languagePanel.updateCacheAction(language, !clearingCache && viewModel.pendingCount(uri) == 0 && sourceDocument != null &&
             viewModel.history(uri).any { it.targetLanguage == language })
         projection = translationDocument(sourceDocument?.text.orEmpty(), viewModel.history(uri).filter {
             it.targetLanguage == language
@@ -467,9 +467,35 @@ internal class TranslationLanguagePanel(
     private val preferred = TranslationLanguageComboBox(translationLanguages)
     private val target = TranslationLanguageComboBox(arrayOf("Auto") + translationLanguages)
     private val preview = TranslationLanguageComboBox()
-    private val clearCache = javax.swing.JButton(com.intellij.icons.AllIcons.Actions.Refresh).apply {
+    private val clearCache = object : JButton(com.intellij.icons.AllIcons.Actions.Refresh) {
+        override fun paintComponent(graphics: Graphics) {
+            if (isEnabled && (model.isRollover || model.isPressed || hasFocus())) {
+                val background = graphics.create() as Graphics2D
+                try {
+                    background.setRenderingHint(
+                        java.awt.RenderingHints.KEY_ANTIALIASING,
+                        java.awt.RenderingHints.VALUE_ANTIALIAS_ON,
+                    )
+                    background.color = if (model.isPressed) {
+                        JBColor.namedColor("ActionButton.pressedBackground", JBColor(0xC7C7C7, 0x5C5C5C))
+                    } else {
+                        JBColor.namedColor("ActionButton.hoverBackground", JBColor(0xDFDFDF, 0x4C5052))
+                    }
+                    val arc = JBUI.scale(6)
+                    background.fillRoundRect(0, 0, width, height, arc, arc)
+                } finally {
+                    background.dispose()
+                }
+            }
+            super.paintComponent(graphics)
+        }
+    }.apply {
+        isRolloverEnabled = true
         isEnabled = false
+        disabledIcon = com.intellij.openapi.util.IconLoader.getDisabledIcon(icon)
         preferredSize = JBUI.size(24, 24)
+        maximumSize = preferredSize
+        alignmentY = CENTER_ALIGNMENT
         margin = JBUI.emptyInsets()
         isFocusable = true
         isOpaque = false
@@ -526,7 +552,9 @@ internal class TranslationLanguagePanel(
         val previewControls = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
             isOpaque = false
             add(preview, BorderLayout.CENTER)
-            add(clearCache, BorderLayout.EAST)
+            add(javax.swing.Box.createHorizontalBox().apply {
+                add(clearCache)
+            }, BorderLayout.EAST)
         }
         toolbar.addItem(group("Preview", previewControls)) {
             selectionMenu("Preview: ${preview.selectedItem}", choices(preview), preview.selectedItem as? String,
