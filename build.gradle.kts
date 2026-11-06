@@ -53,9 +53,10 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Improvements</h2>
         <ul>
-            <li>Show compact language codes in language selectors and token usage history</li>
-            <li>Display native language names in selection menus and tooltips</li>
-            <li>Add separate Simplified and Traditional Chinese language options</li>
+            <li>Unify translation and preview language selection in a single Target selector</li>
+            <li>Show the resolved target language when Auto is selected and list the preferred language first after Auto</li>
+            <li>Improve Retranslate button feedback and disable it while translations are pending</li>
+            <li>Right-align token usage numbers and column headers for easier comparison</li>
         </ul>
     """.trimIndent()
     nativeVariants {
