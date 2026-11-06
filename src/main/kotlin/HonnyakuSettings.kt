@@ -41,9 +41,7 @@ class TranslationPreferences(
     var targetLanguage: String
         get() = local.targetLanguage.takeIf { it == "Auto" || languageOption(it) != null } ?: "Auto"
         set(value) { local.targetLanguage = value }
-    var previewPreferred: Boolean
-        get() = local.previewPreferred
-        set(value) { local.previewPreferred = value }
+
 }
 
 /** Project session state and project-specific language choices. */
@@ -52,7 +50,6 @@ class TranslationPreferences(
 class HonnyakuSettings(private val project: Project) : PersistentStateComponent<HonnyakuSettings.SettingsState>, Disposable {
     data class SettingsState(
         var targetLanguage: String = "Auto",
-        var previewPreferred: Boolean = false,
     )
     private var settingsState = SettingsState()
     override fun getState(): SettingsState = settingsState

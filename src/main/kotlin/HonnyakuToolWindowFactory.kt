@@ -444,7 +444,7 @@ internal fun TranslationPreferences.resolvedTarget(source: String): String =
     if (targetLanguage == "Auto") automaticTargetLanguage(source, preferredLanguage) else targetLanguage
 
 internal fun TranslationPreferences.previewLanguage(source: String): String =
-    if (previewPreferred) preferredLanguage else resolvedTarget(source)
+    resolvedTarget(source)
 
 
 /** Keep the popup wide enough for native names while the closed control displays a code. */
@@ -466,7 +466,8 @@ internal class TranslationLanguagePanel(
     private val toolbar = OverflowToolbar()
     private val preferred = TranslationLanguageComboBox(translationLanguages)
     private val target = TranslationLanguageComboBox(arrayOf("Auto") + translationLanguages)
-    private val preview = TranslationLanguageComboBox()
+    private var automaticLanguage = "en"
+    private var updatingTarget = false
     private val clearCache = object : JButton(com.intellij.icons.AllIcons.Actions.Refresh) {
         override fun paintComponent(graphics: Graphics) {
             if (isEnabled && (model.isRollover || model.isPressed || hasFocus())) {
@@ -504,16 +505,17 @@ internal class TranslationLanguagePanel(
         accessibleContext.accessibleName = "Retranslate"
         addActionListener { onClearCache() }
     }
-    private var updatingPreview = false
 
     init {
-        listOf(preferred, target, preview).forEach { combo ->
+        listOf(preferred, target).forEach { combo ->
             // Wide-popup combos truncate long String values while measuring their initial size.
             // Keep the complete language key so the renderer can resolve its compact code.
             combo.setMinLength(Int.MAX_VALUE)
             val standardRenderer = combo.renderer
             combo.renderer = ListCellRenderer { list, value, index, selected, focused ->
-                val label = if (index < 0) languageOption(value)?.displayCode ?: value.orEmpty() else languageLabel(value)
+                val label = if (index < 0 && combo === target && value == "Auto") {
+                    "Auto (${languageOption(automaticLanguage)?.displayCode ?: automaticLanguage})"
+                } else if (index < 0) languageOption(value)?.displayCode ?: value.orEmpty() else languageLabel(value)
                 standardRenderer.getListCellRendererComponent(list, label, index, selected, focused)
             }
             fun updateSelectionPresentation() {
@@ -529,8 +531,6 @@ internal class TranslationLanguagePanel(
         preferred.selectedItem = settings.preferredLanguage
         target.selectedItem = settings.targetLanguage
         preferred.accessibleContext.accessibleName = "Preferred language"
-        target.accessibleContext.accessibleName = "Translation target language"
-        target.toolTipText = if (settings.targetLanguage == "Auto") "Auto-detect target language" else languageLabel(settings.targetLanguage)
         border = JBUI.Borders.empty(6)
         fun group(label: String, control: javax.swing.JComponent) = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
             isOpaque = false
@@ -543,23 +543,18 @@ internal class TranslationLanguagePanel(
                 preferred.selectedItem = it
             }
         }
-        toolbar.addItem(group("Target", target)) {
-            selectionMenu("Target: ${target.selectedItem}", choices(target), target.selectedItem as? String) {
-                target.selectedItem = it
-            }
-        }
-        preview.accessibleContext.accessibleName = "Preview language"
-        val previewControls = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+        target.accessibleContext.accessibleName = "Target language"
+        val targetControls = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
             isOpaque = false
-            add(preview, BorderLayout.CENTER)
+            add(target, BorderLayout.CENTER)
             add(javax.swing.Box.createHorizontalBox().apply {
                 add(clearCache)
             }, BorderLayout.EAST)
         }
-        toolbar.addItem(group("Preview", previewControls)) {
-            selectionMenu("Preview: ${preview.selectedItem}", choices(preview), preview.selectedItem as? String,
-                choicesEnabled = preview.isEnabled,
-                select = { preview.selectedItem = it },
+        toolbar.addItem(group("Target", targetControls)) {
+            selectionMenu("Target: ${target.selectedItem}", choices(target), target.selectedItem as? String,
+                choicesEnabled = target.isEnabled,
+                select = { target.selectedItem = it },
             ).apply {
                 addSeparator()
                 add(object : DumbAwareAction(clearCache.toolTipText, null, clearCache.icon) {
@@ -577,16 +572,9 @@ internal class TranslationLanguagePanel(
             onChange()
         }
         target.addActionListener {
-            settings.targetLanguage = target.selectedItem as String
-            onChange()
-        }
-        preview.addActionListener {
-            if (!updatingPreview) {
-                val usePreferred = preview.selectedItem == settings.preferredLanguage
-                if (usePreferred != settings.previewPreferred) {
-                    settings.previewPreferred = usePreferred
-                    onChange()
-                }
+            if (!updatingTarget) {
+                settings.targetLanguage = target.selectedItem as String
+                onChange()
             }
         }
     }
@@ -597,17 +585,25 @@ internal class TranslationLanguagePanel(
     }
 
     fun updateTarget(language: String) {
-        val options = listOf(settings.preferredLanguage, language).distinct().sortedBy { languageOption(it)?.code ?: it }
-        updatingPreview = true
-        try {
-            if ((0 until preview.itemCount).map { preview.getItemAt(it) } != options) {
-                preview.removeAllItems()
-                options.forEach { preview.addItem(it) }
-            }
-            preview.selectedItem = if (settings.previewPreferred) settings.preferredLanguage else language
-            preview.isEnabled = options.size > 1
-            preview.toolTipText = languageLabel(preview.selectedItem as? String)
-        } finally { updatingPreview = false }
+        val options = listOf("Auto", settings.preferredLanguage) +
+            translationLanguages.filter { it != settings.preferredLanguage }
+        if ((0 until target.itemCount).map { target.getItemAt(it) } != options) {
+            updatingTarget = true
+            try {
+                target.removeAllItems()
+                options.forEach { target.addItem(it) }
+                target.selectedItem = settings.targetLanguage
+            } finally { updatingTarget = false }
+        }
+        automaticLanguage = language
+        target.toolTipText = if (settings.targetLanguage == "Auto") {
+            "Auto: ${languageLabel(language)}"
+        } else languageLabel(settings.targetLanguage)
+        target.prototypeDisplayValue = if (settings.targetLanguage == "Auto") {
+            "Auto (${languageOption(language)?.displayCode ?: language})"
+        } else settings.targetLanguage
+        target.revalidate()
+        target.repaint()
     }
 }
 
@@ -747,6 +743,19 @@ internal class TokenUsageLabel : JBLabel() {
         ) {
             override fun isCellEditable(row: Int, column: Int) = false
         })
+        val numberRenderer = javax.swing.table.DefaultTableCellRenderer().apply {
+            horizontalAlignment = javax.swing.SwingConstants.RIGHT
+        }
+        for (column in 3..6) {
+            table.columnModel.getColumn(column).cellRenderer = numberRenderer
+        }
+        val headerRenderer = table.tableHeader.defaultRenderer
+        table.tableHeader.defaultRenderer = javax.swing.table.TableCellRenderer { owner, value, selected, focused, row, column ->
+            headerRenderer.getTableCellRendererComponent(owner, value, selected, focused, row, column).also { component ->
+                (component as? javax.swing.JLabel)?.horizontalAlignment =
+                    if (owner.convertColumnIndexToModel(column) >= 3) javax.swing.SwingConstants.RIGHT else javax.swing.SwingConstants.LEFT
+            }
+        }
         val content = com.intellij.ui.components.JBScrollPane(table).apply {
             preferredSize = JBUI.size(850, 240)
         }

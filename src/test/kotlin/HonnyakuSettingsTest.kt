@@ -18,7 +18,7 @@ class HonnyakuSettingsTest {
         ), restored.state)
     }
 
-    @Test fun `projects share model and preferred language but keep target and preview separate`() {
+    @Test fun `projects share model and preferred language but keep preview language project local`() {
         val global = HonnyakuPreferences.SettingsState()
         val firstState = HonnyakuSettings.SettingsState()
         val secondState = HonnyakuSettings.SettingsState()
@@ -27,12 +27,21 @@ class HonnyakuSettingsTest {
         first.model = "chosen-model"
         first.preferredLanguage = "en"
         first.targetLanguage = "fr"
-        first.previewPreferred = true
         assertEquals("chosen-model", second.model)
         assertEquals("en", second.preferredLanguage)
         assertEquals("Auto", second.targetLanguage)
-        assertFalse(second.previewPreferred)
-        assertEquals(HonnyakuSettings.SettingsState("fr", true), firstState.copy())
+        assertEquals(HonnyakuSettings.SettingsState("fr"), firstState.copy())
+    }
+
+    @Test fun `preview resolves auto and respects an explicit language`() {
+        val preferences = TranslationPreferences(
+            HonnyakuPreferences.SettingsState(preferredLanguage = "en"),
+            HonnyakuSettings.SettingsState(),
+        )
+        preferences.targetLanguage = "Auto"
+        assertEquals(automaticTargetLanguage("日本語です", "en"), preferences.previewLanguage("日本語です"))
+        preferences.targetLanguage = "fr"
+        assertEquals("fr", preferences.previewLanguage("日本語です"))
     }
 
     @Test fun `unsupported language preferences fall back to defaults`() {
