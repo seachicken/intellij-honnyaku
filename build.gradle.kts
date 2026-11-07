@@ -53,10 +53,10 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Improvements</h2>
         <ul>
-            <li>Unify translation and preview language selection in a single Target selector</li>
-            <li>Show the resolved target language when Auto is selected and list the preferred language first after Auto</li>
-            <li>Improve Retranslate button feedback and disable it while translations are pending</li>
-            <li>Right-align token usage numbers and column headers for easier comparison</li>
+            <li>Add a Preferred target option to always translate into your preferred language</li>
+            <li>Move the preferred language setting to IDE Settings and add a settings shortcut to the translation toolbar</li>
+            <li>Refresh translation previews across open projects when the preferred language changes</li>
+            <li>Simplify the translation toolbar and show the resolved language for Auto and Preferred targets</li>
         </ul>
     """.trimIndent()
     nativeVariants {
