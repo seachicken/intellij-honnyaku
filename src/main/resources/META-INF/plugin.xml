@@ -18,6 +18,8 @@
     <!-- Extensions defined by the plugin.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
+        <applicationConfigurable parentId="tools" id="honnyaku.settings" displayName="Honnyaku"
+                                 instance="honnyaku.HonnyakuConfigurable"/>
         <notificationGroup id="Honnyaku" displayType="BALLOON"/>
         <!-- If the plugin is published on JetBrains Marketplace, errors reported by users are available on the plugin page.
              See https://plugins.jetbrains.com/docs/marketplace/error-handler.html#developers-side for details. -->

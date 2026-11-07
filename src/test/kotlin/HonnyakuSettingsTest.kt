@@ -44,6 +44,18 @@ class HonnyakuSettingsTest {
         assertEquals("fr", preferences.previewLanguage("日本語です"))
     }
 
+    @Test fun `preferred follows reading language while auto supports writing`() {
+        val global = HonnyakuPreferences.SettingsState(preferredLanguage = "ja")
+        val preferences = TranslationPreferences(global, HonnyakuSettings.SettingsState())
+        preferences.targetLanguage = "Preferred"
+        assertEquals("ja", preferences.previewLanguage("English text"))
+        global.preferredLanguage = "fr"
+        assertEquals("fr", preferences.previewLanguage("English text"))
+        preferences.preferredLanguage = "ja"
+        preferences.targetLanguage = "Auto"
+        assertEquals("en", preferences.previewLanguage("日本語で書く"))
+    }
+
     @Test fun `unsupported language preferences fall back to defaults`() {
         for (language in listOf("Japanese", "English", "Chinese", "Chinese (Traditional, Taiwan)", "unsupported", "")) {
             val preferences = TranslationPreferences(

@@ -2,6 +2,7 @@ package honnyaku
 
 import com.google.gson.Gson
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
@@ -13,6 +14,16 @@ import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VfsUtilCore
+import com.intellij.util.messages.Topic
+
+fun interface PreferredLanguageListener {
+    fun preferredLanguageChanged()
+
+    companion object {
+        @JvmField
+        val TOPIC = Topic.create("Honnyaku preferred language changed", PreferredLanguageListener::class.java)
+    }
+}
 
 @Service(Service.Level.APP)
 @State(name = "HonnyakuPreferences", storages = [Storage("honnyaku.xml")])
@@ -24,6 +35,13 @@ class HonnyakuPreferences : PersistentStateComponent<HonnyakuPreferences.Setting
     private var settingsState = SettingsState()
     override fun getState(): SettingsState = settingsState
     override fun loadState(state: SettingsState) { settingsState = state.copy(model = state.model.trim()) }
+
+    fun updatePreferredLanguage(language: String) {
+        if (settingsState.preferredLanguage == language) return
+        settingsState.preferredLanguage = language
+        ApplicationManager.getApplication().messageBus.syncPublisher(PreferredLanguageListener.TOPIC)
+            .preferredLanguageChanged()
+    }
 
 }
 
@@ -39,7 +57,7 @@ class TranslationPreferences(
         get() = global.preferredLanguage.takeIf { languageOption(it) != null } ?: "ja"
         set(value) { global.preferredLanguage = value }
     var targetLanguage: String
-        get() = local.targetLanguage.takeIf { it == "Auto" || languageOption(it) != null } ?: "Auto"
+        get() = local.targetLanguage.takeIf { it == "Auto" || it == "Preferred" || languageOption(it) != null } ?: "Auto"
         set(value) { local.targetLanguage = value }
 
 }
