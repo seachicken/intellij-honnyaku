@@ -24,6 +24,7 @@
         <!-- If the plugin is published on JetBrains Marketplace, errors reported by users are available on the plugin page.
              See https://plugins.jetbrains.com/docs/marketplace/error-handler.html#developers-side for details. -->
         <errorHandler implementation="com.intellij.diagnostic.JetBrainsMarketplaceErrorReportSubmitter"/>
+        <diff.DiffExtension implementation="honnyaku.TranslationDiffExtension"/>
         <platform.lsp.serverSupportProvider implementation="honnyaku.LanguageServerProvider"/>
         <toolWindow id="Honnyaku" factoryClass="honnyaku.HonnyakuToolWindowFactory"
                     icon="/icons/expui/honnyakuToolWindow.svg" anchor="right"/>

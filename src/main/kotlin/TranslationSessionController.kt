@@ -1,38 +1,44 @@
 package honnyaku
 
 import com.intellij.execution.process.OSProcessHandler
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.components.Service
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.openapi.wm.ex.ToolWindowManagerListener
-import com.intellij.platform.lsp.api.LspServerManager
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.WriteIntentReadAction
+import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
-import com.intellij.openapi.fileEditor.FileDocumentManager
-import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.platform.lsp.api.LspServer
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
-import com.intellij.openapi.editor.event.VisibleAreaEvent
-import com.intellij.openapi.editor.event.VisibleAreaListener
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
-import com.intellij.openapi.fileEditor.FileEditorManagerListener
+import com.intellij.openapi.editor.event.VisibleAreaEvent
+import com.intellij.openapi.editor.event.VisibleAreaListener
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.wm.ex.ToolWindowManagerListener
+import com.intellij.platform.lsp.api.LspServer
+import com.intellij.platform.lsp.api.LspServerManager
 import com.intellij.platform.lsp.api.LspServerState
+import com.intellij.pom.PsiDeclaredTarget
 import com.intellij.psi.PsiComment
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiLanguageInjectionHost
-import com.intellij.pom.PsiDeclaredTarget
-import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
+import java.awt.Point
+import javax.swing.Timer
+import org.eclipse.lsp4j.DidOpenTextDocumentParams
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
-import javax.swing.Timer
-import java.awt.Point
-import com.intellij.openapi.editor.Document
-import com.intellij.openapi.util.Disposer
+import org.eclipse.lsp4j.TextDocumentItem
+import org.eclipse.lsp4j.jsonrpc.ResponseErrorException
 
 @Service(Service.Level.PROJECT)
 class TranslationSessionController(private val project: Project) : Disposable {
@@ -74,12 +80,12 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val editors = EditorFactory.getInstance().eventMulticaster
         editors.addVisibleAreaListener(object : VisibleAreaListener {
             override fun visibleAreaChanged(event: VisibleAreaEvent) {
-                if (event.editor === FileEditorManager.getInstance(project).selectedTextEditor) queueVisibleTranslation()
+                if (event.editor.project === project) queueVisibleTranslation()
             }
         }, this)
         editors.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
-                if (event.document === FileEditorManager.getInstance(project).selectedTextEditor?.document) queueVisibleTranslation()
+                queueVisibleTranslation()
             }
         }, this)
         project.messageBus.connect(this).subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER,
@@ -94,17 +100,27 @@ class TranslationSessionController(private val project: Project) : Disposable {
 
     fun syncVisibility() {
         visibility.update(ToolWindowManager.getInstance(project).getToolWindow("Honnyaku")?.isVisible == true)
+        queueVisibleTranslation()
     }
 
     fun queueVisibleTranslation(force: Boolean = false) {
         if (project.isDisposed || !isVisible) return
-        if (!ApplicationManager.getApplication().isDispatchThread) {
-            ApplicationManager.getApplication().invokeLater { queueVisibleTranslation(force) }
+        // UI-dispatcher callbacks forbid model locks, even though they run on EDT.
+        if (!ApplicationManager.getApplication().isDispatchThread ||
+            !ApplicationManager.getApplication().isReadAccessAllowed) {
+            ApplicationManager.getApplication().invokeLater {
+                WriteIntentReadAction.run { queueVisibleTranslation(force) }
+            }
             return
         }
         if (force) {
             lastAttempt = null
             retries.reset()
+        }
+        if (project.service<TranslationSources>().current?.isDiff == true) {
+            LspServerManager.getInstance(project).ensureServerStarted(
+                LanguageServerProvider::class.java, HonnyakuServerDescriptor(project),
+            )
         }
         viewportTimer.restart()
     }
@@ -126,22 +142,23 @@ class TranslationSessionController(private val project: Project) : Disposable {
             pending()
             return
         }
-        val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return
-        val document = editor.document
-        val file = FileDocumentManager.getInstance().getFile(document) ?: return
+        val source = project.service<TranslationSources>().current ?: return
+        val editor = source.editor
+        val document = source.document
+        val file = source.file
         if (!isProjectTranslationFile(project, file)) return
         val preview = previewViewport?.invoke()?.takeIf { it.document === document }
         val area = editor.scrollingModel.visibleArea
         if (preview == null && (area.height <= 0 || area.width <= 0)) return
-        val first = preview?.firstLine ?: editor.xyToLogicalPosition(Point(area.x, area.y)).line
-        val last = preview?.lastLine ?: editor.xyToLogicalPosition(Point(area.x, area.y + area.height - 1)).line
+        val first = preview?.firstLine ?: source.sourceLine(editor.xyToLogicalPosition(Point(area.x, area.y)).line)
+        val last = preview?.lastLine ?: source.sourceLine(editor.xyToLogicalPosition(Point(area.x, area.y + area.height - 1)).line)
         val window = translationLineWindow(first, last, document.lineCount)
         if (!supportsViewportTranslation(server.initializeResult?.capabilities?.experimental)) return
         if (!isWholeDocumentTranslation(file) &&
             !supportsRangeTranslation(server.initializeResult?.capabilities?.experimental)) return
         val ranges = if (isWholeDocumentTranslation(file)) null else {
             textTranslationRanges(project, document) ?: run {
-                com.intellij.psi.PsiDocumentManager.getInstance(project).performForCommittedDocument(document) {
+                PsiDocumentManager.getInstance(project).performForCommittedDocument(document) {
                     queueVisibleTranslation()
                 }
                 return
@@ -155,17 +172,21 @@ class TranslationSessionController(private val project: Project) : Disposable {
         if (lastAttempt == attempt || !retries.canAttempt(attempt)) return
         lastAttempt = attempt
         val request = Request(server)
+        val diffOnly = source.isDiff && !FileEditorManager.getInstance(project).isFileOpen(file)
+        val languageId = server.descriptor.getLanguageId(file)
         activeRequest = request
         // Only one request is outstanding. Once it completes, recompute the viewport
         // rather than draining a queue of positions passed during a fast scroll.
         ApplicationManager.getApplication().executeOnPooledThread {
             var failed = false
             try {
-                server.sendRequestSync(150_000) { (it as HonnyakuLanguageServer).translateVisible(params) }
+                translateSnapshot(server, params, diffOnly, languageId) {
+                    server.getDocumentVersion(document) == params.textDocument.version
+                }
             } catch (exception: Exception) {
                 failed = true
                 if (!project.isDisposed && server.state == LspServerState.Running) {
-                    com.intellij.openapi.diagnostic.Logger.getInstance(TranslationSessionController::class.java)
+                    Logger.getInstance(TranslationSessionController::class.java)
                         .warn("Visible translation failed", exception)
                 }
             } finally {
@@ -196,18 +217,18 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
             .firstOrNull { it.state == LspServerState.Running }
         if (server == null) {
-            com.intellij.notification.NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
+            NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
                 .createNotification("Translation server unavailable", "Try again when the server is ready.",
-                    com.intellij.notification.NotificationType.WARNING).notify(project)
+                    NotificationType.WARNING).notify(project)
             completed()
             queueVisibleTranslation()
             return
         }
         if (!supportsCacheDeletion(server.initializeResult?.capabilities?.experimental)) {
-            com.intellij.notification.NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
+            NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
                 .createNotification("Server update required",
                     "Update Honnyaku to clear the cache.",
-                    com.intellij.notification.NotificationType.WARNING).notify(project)
+                    NotificationType.WARNING).notify(project)
             completed()
             queueVisibleTranslation()
             return
@@ -229,10 +250,10 @@ class TranslationSessionController(private val project: Project) : Disposable {
                     if (failure == null) {
                         project.service<HonnyakuSettings>().viewModel.clearTranslationCache(uri, language)
                     } else {
-                        com.intellij.notification.NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
+                        NotificationGroupManager.getInstance().getNotificationGroup("Honnyaku")
                             .createNotification("Could not clear translation cache",
                                 failure?.message ?: "Please try again.",
-                                com.intellij.notification.NotificationType.ERROR).notify(project)
+                                NotificationType.ERROR).notify(project)
                     }
                     completed()
                     queueVisibleTranslation(force = failure == null)
@@ -274,8 +295,8 @@ internal data class TranslationViewport(val document: Document, val firstLine: I
 /** Swing timers have no model locks or write-safe transaction context. */
 internal fun translationViewportTimer(translate: () -> Unit): Timer = Timer(1_000) {
     ApplicationManager.getApplication().invokeLater(
-        { translate() },
-        com.intellij.openapi.application.ModalityState.nonModal(),
+        { WriteIntentReadAction.run { translate() } },
+        ModalityState.nonModal(),
     )
 }.apply { isRepeats = false }
 
@@ -355,4 +376,30 @@ internal fun textTranslationRanges(project: Project, document: Document): List<R
         }
     })
     return ranges
+}
+
+/** Diff-only files are not opened by FileEditorManager, so the IDE may not send didOpen. */
+internal fun translateSnapshot(
+    server: LspServer,
+    params: VisibleTranslationParams,
+    diffOnly: Boolean,
+    languageId: String,
+    snapshotIsCurrent: () -> Boolean = { true },
+) {
+    try {
+        server.sendRequestSync(150_000) { (it as HonnyakuLanguageServer).translateVisible(params) }
+    } catch (exception: Exception) {
+        val rpc = generateSequence<Throwable>(exception) { it.cause }
+            .filterIsInstance<ResponseErrorException>().firstOrNull()
+        if (!diffOnly || rpc?.responseError?.code != -32801 || !snapshotIsCurrent()) throw exception
+        // Recover a closed document on the same connection immediately before the snapshot.
+        // Normal IDE-managed documents continue to use the platform's synchronization.
+        server.sendRequestSync(150_000) {
+            val doc = params.textDocument
+            it.textDocumentService.didOpen(
+                DidOpenTextDocumentParams(TextDocumentItem(doc.uri, languageId, doc.version, doc.text)),
+            )
+            (it as HonnyakuLanguageServer).translateVisible(params)
+        }
+    }
 }

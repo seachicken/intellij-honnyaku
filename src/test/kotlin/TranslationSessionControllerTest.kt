@@ -1,8 +1,29 @@
 package honnyaku
 
+import com.intellij.lang.Language
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.fileTypes.LanguageFileType
+import com.intellij.platform.lsp.api.LspServer
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import java.awt.event.ActionEvent
+import java.lang.reflect.Proxy
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import javax.swing.Icon
+import org.eclipse.lsp4j.DidOpenTextDocumentParams
+import org.eclipse.lsp4j.jsonrpc.ResponseErrorException
+import org.eclipse.lsp4j.jsonrpc.messages.ResponseError
+import org.eclipse.lsp4j.services.LanguageServer
+import org.eclipse.lsp4j.services.TextDocumentService
+import org.junit.Assert.assertThrows
 
 class TranslationSessionControllerTest : BasePlatformTestCase() {
+    // Exercise Swing timer callbacks without the fixture's implicit read lock.
+    override fun runInDispatchThread() = name != "testViewportTimerAcquiresWriteIntentReadAccess"
+
     fun testCommentsAndStringContentsExcludeMarkup() {
         val file = myFixture.configureByText("example.xml", "<a value=\"// text\"><!-- hello --></a>")
         val document = myFixture.editor.document
@@ -17,11 +38,11 @@ class TranslationSessionControllerTest : BasePlatformTestCase() {
     fun testMultilineCommentsKeepOriginalPositionsAfterAnEdit() {
         myFixture.configureByText("example.xml", "<a><!-- first\nsecond --></a>")
         val document = myFixture.editor.document
-        com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+        WriteCommandAction.runWriteCommandAction(project) {
             document.insertString(0, "\n")
         }
         assertNull(textTranslationRanges(project, document))
-        com.intellij.psi.PsiDocumentManager.getInstance(project).commitDocument(document)
+        PsiDocumentManager.getInstance(project).commitDocument(document)
         val range = textTranslationRanges(project, document)!!.single()
         assertEquals(1, range.start.line)
         assertEquals(3, range.start.character)
@@ -54,15 +75,95 @@ class TranslationSessionControllerTest : BasePlatformTestCase() {
         // Simulate the AsciiDoc plugin so plain-text fallback cannot hide a regression.
         val fileType = TestAsciiDocFileType()
         for (name in listOf("example.adoc", "custom.doc")) {
-            val file = com.intellij.testFramework.LightVirtualFile(name, fileType, "= Title\n\n本文")
+            val file = LightVirtualFile(name, fileType, "= Title\n\n本文")
             assertTrue(name, isWholeDocumentTranslation(file))
         }
     }
 
-    private class TestAsciiDocFileType : com.intellij.openapi.fileTypes.LanguageFileType(com.intellij.lang.Language.ANY) {
+    private class TestAsciiDocFileType : LanguageFileType(Language.ANY) {
         override fun getName() = "AsciiDoc"
         override fun getDescription() = "AsciiDoc"
         override fun getDefaultExtension() = "adoc"
-        override fun getIcon(): javax.swing.Icon? = null
+        override fun getIcon(): Icon? = null
+    }
+
+    private val params = VisibleTranslationParams(VisibleTranslationDocument("file:///source.txt", 3, "edited"), 0, 1)
+
+    private fun server(events: MutableList<String>, errorCode: Int? = null): LspServer {
+        var first = true
+        val documents = proxy<TextDocumentService> { name, args ->
+            if (name == "didOpen") {
+                val doc = (args[0] as DidOpenTextDocumentParams).textDocument
+                assertEquals(params.textDocument.uri, doc.uri)
+                assertEquals(params.textDocument.version, doc.version)
+                assertEquals(params.textDocument.text, doc.text)
+                assertEquals("plaintext", doc.languageId)
+                events.add("open")
+            }
+            null
+        }
+        val remote = proxy<HonnyakuLanguageServer> { name, args ->
+            when (name) {
+                "getTextDocumentService" -> documents
+                "translateVisible" -> {
+                    assertSame(params, args[0])
+                    events.add("translate")
+                    if (first && errorCode != null) {
+                        first = false
+                        CompletableFuture.failedFuture<Any?>(ResponseErrorException(ResponseError(errorCode, "failure", null)))
+                    } else CompletableFuture.completedFuture<Any?>(null)
+                }
+                else -> error(name)
+            }
+        }
+        return proxy { name, args ->
+            assertEquals("sendRequestSync", name)
+            @Suppress("UNCHECKED_CAST")
+            val request = args[1] as (LanguageServer) -> CompletableFuture<Any?>
+            request(remote).get()
+        }
+    }
+
+    fun testDiffOnlyClosedDocumentIsOpenedBeforeRetryingTheSameSnapshot() {
+        val events = mutableListOf<String>()
+        translateSnapshot(server(events, -32801), params, true, "plaintext")
+        assertEquals(listOf("translate", "open", "translate"), events)
+    }
+
+    fun testAlreadySynchronizedDiffDoesNotSendDuplicateDidOpen() {
+        val events = mutableListOf<String>()
+        translateSnapshot(server(events), params, true, "plaintext")
+        assertEquals(listOf("translate"), events)
+    }
+
+    fun testNormalEditorAndUnrelatedFailuresDoNotReopenDocuments() {
+        for ((isDiff, code) in listOf(false to -32801, true to -32602)) {
+            val events = mutableListOf<String>()
+            assertThrows(Exception::class.java) { translateSnapshot(server(events, code), params, isDiff, "plaintext") }
+            assertEquals(listOf("translate"), events)
+        }
+    }
+
+    fun testAnEditAfterTheRequestPreventsReopeningAnOutdatedSnapshot() {
+        val events = mutableListOf<String>()
+        assertThrows(Exception::class.java) {
+            translateSnapshot(server(events, -32801), params, true, "plaintext") { false }
+        }
+        assertEquals(listOf("translate"), events)
+    }
+
+    private inline fun <reified T> proxy(crossinline invoke: (String, Array<out Any?>) -> Any?): T =
+        Proxy.newProxyInstance(T::class.java.classLoader, arrayOf(T::class.java)) { _, method, args ->
+            invoke(method.name, args ?: emptyArray())
+        } as T
+
+    fun testViewportTimerAcquiresWriteIntentReadAccess() {
+        val result = CompletableFuture<Boolean>()
+        val timer = translationViewportTimer {
+            result.complete(ApplicationManager.getApplication().isReadAccessAllowed &&
+                ApplicationManager.getApplication().isDispatchThread)
+        }
+        timer.actionListeners.single().actionPerformed(ActionEvent(timer, ActionEvent.ACTION_PERFORMED, "test"))
+        assertTrue(result.get(15, TimeUnit.SECONDS))
     }
 }

@@ -9,7 +9,6 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.openapi.components.service
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
@@ -93,7 +92,7 @@ class HonnyakuSettings(private val project: Project) : PersistentStateComponent<
             })
     }
 
-    private fun selectedFileUri(): String? = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
+    private fun selectedFileUri(): String? = project.service<TranslationSources>().current?.file
         ?.takeIf { isProjectTranslationFile(project, it) }
         ?.let { VfsUtilCore.virtualToIoFile(it).toURI().toASCIIString() }
 
