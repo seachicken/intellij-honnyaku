@@ -80,12 +80,12 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val editors = EditorFactory.getInstance().eventMulticaster
         editors.addVisibleAreaListener(object : VisibleAreaListener {
             override fun visibleAreaChanged(event: VisibleAreaEvent) {
-                if (event.editor === project.service<TranslationSources>().current?.editor) queueVisibleTranslation()
+                if (event.editor.project === project) queueVisibleTranslation()
             }
         }, this)
         editors.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
-                if (event.document === project.service<TranslationSources>().current?.document) queueVisibleTranslation()
+                queueVisibleTranslation()
             }
         }, this)
         project.messageBus.connect(this).subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER,
@@ -105,8 +105,12 @@ class TranslationSessionController(private val project: Project) : Disposable {
 
     fun queueVisibleTranslation(force: Boolean = false) {
         if (project.isDisposed || !isVisible) return
-        if (!ApplicationManager.getApplication().isDispatchThread) {
-            ApplicationManager.getApplication().invokeLater { queueVisibleTranslation(force) }
+        // UI-dispatcher callbacks forbid model locks, even though they run on EDT.
+        if (!ApplicationManager.getApplication().isDispatchThread ||
+            !ApplicationManager.getApplication().isReadAccessAllowed) {
+            ApplicationManager.getApplication().invokeLater {
+                WriteIntentReadAction.run { queueVisibleTranslation(force) }
+            }
             return
         }
         if (force) {

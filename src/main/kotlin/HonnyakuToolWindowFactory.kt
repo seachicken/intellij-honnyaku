@@ -215,9 +215,11 @@ class HonnyakuTranslationPanel(
         ), this)
         viewer.component.addComponentListener(object : java.awt.event.ComponentAdapter() {
             override fun componentResized(event: java.awt.event.ComponentEvent) {
-                if (!disposed && !project.isDisposed) {
-                    topScrollSpace?.update()
-                    if (!previewScrolledManually) project.service<TranslationSources>().current?.editor?.let { syncWithEditor(it) }
+                ApplicationManager.getApplication().invokeLater {
+                    if (!disposed && !project.isDisposed) {
+                        topScrollSpace?.update()
+                        if (!previewScrolledManually) project.service<TranslationSources>().current?.editor?.let { syncWithEditor(it) }
+                    }
                 }
             }
         })
@@ -225,25 +227,21 @@ class HonnyakuTranslationPanel(
             .addPropertyChangeListener({ event ->
                 if (event.propertyName == EditorEx.PROP_FONT_SIZE ||
                     event.propertyName == EditorEx.PROP_FONT_SIZE_2D) {
-                    (event.source as? Editor)?.takeIf {
-                        !disposed && !project.isDisposed && !it.isDisposed &&
-                            it === project.service<TranslationSources>().current?.editor &&
-                            project.service<TranslationSources>().current?.document === sourceDocument
-                    }?.let {
-                        syncFontSize(it)
-                        syncWithEditor(it)
+                    ApplicationManager.getApplication().invokeLater {
+                        (event.source as? Editor)?.takeIf {
+                            !disposed && !project.isDisposed && !it.isDisposed &&
+                                it === project.service<TranslationSources>().current?.editor &&
+                                project.service<TranslationSources>().current?.document === sourceDocument
+                        }?.let {
+                            syncFontSize(it)
+                            syncWithEditor(it)
+                        }
                     }
                 }
             }, this)
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
-                if (event.document === sourceDocument && !refreshPending) {
-                    refreshPending = true
-                    SwingUtilities.invokeLater {
-                        refreshPending = false
-                        if (!disposed && !project.isDisposed) refreshSelectedFile()
-                    }
-                }
+                if (event.document === sourceDocument) refreshSelectedFile()
             }
         }, this)
         addHierarchyListener { event ->
@@ -269,9 +267,12 @@ class HonnyakuTranslationPanel(
     }
 
     private fun refreshSelectedFile() {
+        if (refreshPending || disposed || project.isDisposed) return
+        refreshPending = true
         // Updating the preview document needs both model locks and a write-safe
         // transaction context; acquiring the lock alone is insufficient.
         ApplicationManager.getApplication().invokeLater({
+            refreshPending = false
             WriteIntentReadAction.run { refreshSelectedFileUnderLock() }
         }, com.intellij.openapi.application.ModalityState.nonModal())
     }
@@ -370,6 +371,12 @@ class HonnyakuTranslationPanel(
 
     private fun syncWithEditor(editor: Editor) {
         if (disposed || project.isDisposed || editor.isDisposed || !isShowing) return
+        if (!ApplicationManager.getApplication().isReadAccessAllowed) {
+            ApplicationManager.getApplication().invokeLater {
+                WriteIntentReadAction.run { syncWithEditor(editor) }
+            }
+            return
+        }
         val source = project.service<TranslationSources>().current ?: return
         if (editor !== source.editor || source.document !== sourceDocument) return
         syncFontSize(editor)
