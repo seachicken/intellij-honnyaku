@@ -506,6 +506,7 @@ internal class TranslationLanguagePanel(
     onClearCache: () -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private var automaticLanguage = "en"
+    private var updatingTarget = false
     private val target = TranslationLanguageComboBox(arrayOf("Auto", "Preferred") + translationLanguages)
     private val clearCache = ToolbarIconButton(com.intellij.icons.AllIcons.Actions.Refresh).apply {
         isEnabled = false
@@ -524,6 +525,7 @@ internal class TranslationLanguagePanel(
         target.selectedItem = settings.targetLanguage
         target.accessibleContext.accessibleName = "Target language"
         target.addActionListener {
+            if (updatingTarget) return@addActionListener
             val language = target.selectedItem as? String ?: return@addActionListener
             if (settings.targetLanguage != language) {
                 settings.targetLanguage = language
@@ -554,6 +556,21 @@ internal class TranslationLanguagePanel(
     }
 
     private fun updateSelection() {
+        val languages = arrayOf("Auto", "Preferred") + translationLanguages.filter {
+            it != settings.preferredLanguage
+        }
+        val currentLanguages = (0 until target.itemCount).map { target.getItemAt(it) }
+        if (currentLanguages != languages.toList()) {
+            updatingTarget = true
+            try {
+                target.model = javax.swing.DefaultComboBoxModel(languages).apply {
+                    // Preserve an existing explicit target even when it is hidden from the popup.
+                    selectedItem = settings.targetLanguage
+                }
+            } finally {
+                updatingTarget = false
+            }
+        }
         target.prototypeDisplayValue = settings.targetLanguage
         target.toolTipText = when (settings.targetLanguage) {
             "Auto" -> "Auto target: ${languageLabel(automaticLanguage)}"
