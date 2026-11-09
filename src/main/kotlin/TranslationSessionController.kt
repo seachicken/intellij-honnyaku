@@ -22,6 +22,9 @@ import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.platform.lsp.api.LspServerState
 import com.intellij.psi.PsiComment
+import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiLanguageInjectionHost
+import com.intellij.pom.PsiDeclaredTarget
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import org.eclipse.lsp4j.Position
@@ -137,7 +140,7 @@ class TranslationSessionController(private val project: Project) : Disposable {
         if (!isWholeDocumentTranslation(file) &&
             !supportsRangeTranslation(server.initializeResult?.capabilities?.experimental)) return
         val ranges = if (isWholeDocumentTranslation(file)) null else {
-            commentTranslationRanges(project, document) ?: run {
+            textTranslationRanges(project, document) ?: run {
                 com.intellij.psi.PsiDocumentManager.getInstance(project).performForCommittedDocument(document) {
                     queueVisibleTranslation()
                 }
@@ -314,9 +317,9 @@ internal class TranslationRetryBudget<T>(private val maxAttempts: Int = 3) {
 
 /**
  * Positions refer to the committed snapshot sent with the request.
- * Null means PSI is still catching up; an empty list means there are no comments.
+ * Null means PSI is still catching up; an empty list means there is no translatable text.
  */
-internal fun commentTranslationRanges(project: Project, document: Document): List<Range>? {
+internal fun textTranslationRanges(project: Project, document: Document): List<Range>? {
     val manager = PsiDocumentManager.getInstance(project)
     // The IDE commits edits asynchronously. Never force a commit from a UI callback.
     if (!manager.isCommitted(document)) return null
@@ -327,9 +330,28 @@ internal fun commentTranslationRanges(project: Project, document: Document): Lis
         return Position(line, offset - document.getLineStartOffset(line))
     }
     psi.accept(object : PsiRecursiveElementWalkingVisitor() {
-        override fun visitComment(comment: PsiComment) {
-            val range = comment.textRange
-            ranges.add(Range(position(range.startOffset), position(range.endOffset)))
+        override fun visitElement(element: PsiElement) {
+            val range = when {
+                element is PsiComment -> element.textRange
+                element is PsiLanguageInjectionHost && element.isValidHost -> {
+                    val content = element.createLiteralTextEscaper().relevantTextRange
+                        .shiftRight(element.textRange.startOffset)
+                    // YAML keys and other declaration names are structural text.
+                    val isName = generateSequence(element.parent) { it.parent }.any { parent ->
+                        (parent as? PsiDeclaredTarget)?.nameIdentifierRange
+                            ?.shiftRight(parent.navigationElement.textRange.startOffset)
+                            ?.contains(content) == true
+                    }
+                    content.takeUnless { isName }
+                }
+                else -> null
+            }
+            if (range != null && !range.isEmpty && !range.subSequence(document.charsSequence).isBlank()) {
+                ranges.add(Range(position(range.startOffset), position(range.endOffset)))
+                // A host may contain other hosts or comments; do not send overlapping ranges.
+                return
+            }
+            super.visitElement(element)
         }
     })
     return ranges

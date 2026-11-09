@@ -18,6 +18,7 @@ dependencies {
     intellijPlatform {
         intellijIdea("2026.1")
         testFramework(TestFrameworkType.Platform)
+        testBundledPlugin("org.jetbrains.plugins.yaml")
 
         // Add plugin dependencies for compilation here, for example:
         // bundledPlugin("com.intellij.java")
