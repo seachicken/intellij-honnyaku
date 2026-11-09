@@ -53,10 +53,9 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Improvements</h2>
         <ul>
-            <li>Add a Preferred target option to always translate into your preferred language</li>
-            <li>Move the preferred language setting to IDE Settings and add a settings shortcut to the translation toolbar</li>
-            <li>Refresh translation previews across open projects when the preferred language changes</li>
-            <li>Simplify the translation toolbar and show the resolved language for Auto and Preferred targets</li>
+            <li>Show partial translation results as they arrive and update progress as each block completes</li>
+            <li>Simplify the target language list by hiding the language already available through Preferred</li>
+            <li>Improve the layout and help text in Honnyaku settings</li>
         </ul>
     """.trimIndent()
     nativeVariants {
