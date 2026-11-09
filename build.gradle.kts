@@ -54,9 +54,8 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Improvements</h2>
         <ul>
-            <li>Show partial translation results as they arrive and update progress as each block completes</li>
-            <li>Simplify the target language list by hiding the language already available through Preferred</li>
-            <li>Improve the layout and help text in Honnyaku settings</li>
+            <li>Show translation previews for local project files in side-by-side and unified diff viewers</li>
+            <li>Translate string contents recognized by installed language plugins, in addition to comments</li>
         </ul>
     """.trimIndent()
     nativeVariants {
