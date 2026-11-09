@@ -1,33 +1,37 @@
 package honnyaku
 
+import com.google.gson.JsonObject
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.OSProcessHandler
 import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.lang.LanguageParserDefinitions
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.components.service
 import com.intellij.openapi.extensions.PluginId
+import com.intellij.openapi.fileTypes.LanguageFileType
+import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.openapi.components.service
 import com.intellij.platform.lsp.api.Lsp4jClient
-import com.intellij.platform.lsp.api.LspServerNotificationsHandler
 import com.intellij.platform.lsp.api.LspServerListener
 import com.intellij.platform.lsp.api.LspServerManager
-import com.intellij.notification.NotificationGroupManager
-import com.intellij.notification.NotificationType
-import com.google.gson.JsonObject
-import org.eclipse.lsp4j.InitializeResult
+import com.intellij.platform.lsp.api.LspServerNotificationsHandler
 import com.intellij.platform.lsp.api.LspServerSupportProvider
 import com.intellij.platform.lsp.api.ProjectWideLspServerDescriptor
-import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import java.nio.file.Files
 import java.text.NumberFormat
 import java.util.Locale
-import org.eclipse.lsp4j.Range
-import org.eclipse.lsp4j.services.LanguageServer
-import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
 import java.util.concurrent.CompletableFuture
+import org.eclipse.lsp4j.InitializeResult
+import org.eclipse.lsp4j.Range
+import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
+import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
+import org.eclipse.lsp4j.services.LanguageServer
 
 class LanguageServerProvider : LspServerSupportProvider {
     override fun fileOpened(project: Project, file: VirtualFile, serverStarter: LspServerSupportProvider.LspServerStarter) {
@@ -42,21 +46,24 @@ class LanguageServerProvider : LspServerSupportProvider {
     }
 }
 
+// Scroll and Swing layout callbacks can run on the EDT without model read access.
 internal fun isProjectTranslationFile(project: Project, file: VirtualFile): Boolean =
-    !file.isDirectory && !file.fileType.isBinary &&
-        (isWholeDocumentTranslation(file) ||
-            (file.fileType as? com.intellij.openapi.fileTypes.LanguageFileType)?.language?.let {
-                com.intellij.lang.LanguageParserDefinitions.INSTANCE.forLanguage(it) != null
-            } == true) &&
-        ProjectFileIndex.getInstance(project).isInContent(file)
+    ReadAction.compute<Boolean, RuntimeException> {
+        !file.isDirectory && !file.fileType.isBinary &&
+            (isWholeDocumentTranslation(file) ||
+                (file.fileType as? LanguageFileType)?.language?.let {
+                    LanguageParserDefinitions.INSTANCE.forLanguage(it) != null
+                } == true) &&
+            ProjectFileIndex.getInstance(project).isInContent(file)
+    }
 
-private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "Honnyaku") {
+internal class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "Honnyaku") {
     override fun createInitializationOptions(): Any =
         translationInitializationOptions(
             project.service<HonnyakuSettings>().preferences.model,
             project.service<TranslationHistory>().read(),
             project.service<HonnyakuSettings>().preferences.previewLanguage(
-                com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).selectedTextEditor?.document?.text.orEmpty()),
+                project.service<TranslationSources>().current?.document?.text.orEmpty()),
         )
 
     override val lspServerListener: LspServerListener = object : LspServerListener {
@@ -99,7 +106,7 @@ private class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerD
     override fun getLanguageId(file: VirtualFile): String =
         if (file.fileType.name.equals("Markdown", ignoreCase = true)) "markdown"
         else if (isWholeDocumentTranslation(file)) "plaintext"
-        else (file.fileType as com.intellij.openapi.fileTypes.LanguageFileType).language.id.lowercase(Locale.ROOT)
+        else (file.fileType as LanguageFileType).language.id.lowercase(Locale.ROOT)
 
     override fun createCommandLine(): GeneralCommandLine {
         val developmentExecutable = System.getenv("HONNYAKU_SERVER_PATH")?.takeIf { it.isNotBlank() }
@@ -181,7 +188,7 @@ class HonnyakuLanguageClient(
                 val viewModel = project.service<HonnyakuSettings>().viewModel
                 viewModel.resetRuntimeState()
                 val settings = project.service<HonnyakuSettings>().preferences
-                val source = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).selectedTextEditor?.document?.text.orEmpty()
+                val source = project.service<TranslationSources>().current?.document?.text.orEmpty()
                 viewModel.beginUsageSession(usageSessionId, settings.model, settings.previewLanguage(source))
             }
         }
@@ -292,6 +299,6 @@ internal fun supportsRangeTranslation(experimental: Any?): Boolean = when (exper
 }
 
 internal fun isWholeDocumentTranslation(file: VirtualFile): Boolean =
-    file.fileType == com.intellij.openapi.fileTypes.PlainTextFileType.INSTANCE ||
+    file.fileType == PlainTextFileType.INSTANCE ||
         file.fileType.name.equals("Markdown", ignoreCase = true) ||
         file.fileType.name.equals("AsciiDoc", ignoreCase = true)

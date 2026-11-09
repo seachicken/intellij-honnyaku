@@ -1,11 +1,14 @@
 package honnyaku
 
-import com.intellij.openapi.actionSystem.ActionUpdateThread
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.ide.DataManager
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.application.WriteIntentReadAction
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.command.CommandProcessor
 import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Editor
@@ -23,9 +26,11 @@ import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
 import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.fileEditor.FileDocumentManager
-import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
@@ -39,29 +44,23 @@ import com.intellij.util.ui.AsyncProcessIcon
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.Container
+import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.LayoutManager
 import java.awt.LinearGradientPaint
 import java.awt.Point
 import java.awt.event.HierarchyEvent
 import java.net.URI
+import javax.swing.JButton
+import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.ListCellRenderer
 import javax.swing.SwingUtilities
 import javax.swing.Timer
-import com.intellij.ide.DataManager
-import com.intellij.openapi.actionSystem.AnAction
-import com.intellij.openapi.actionSystem.DefaultActionGroup
-import com.intellij.openapi.actionSystem.ToggleAction
-import com.intellij.openapi.project.DumbAware
-import com.intellij.openapi.ui.popup.JBPopupFactory
-import java.awt.Container
-import java.awt.Dimension
-import java.awt.LayoutManager
-import javax.swing.JButton
-import javax.swing.JComponent
 
 internal class TranslationScrollListener(
     private val preview: Editor,
@@ -187,6 +186,7 @@ class HonnyakuTranslationPanel(
             add(loadingStatus, BorderLayout.NORTH)
         }, BorderLayout.SOUTH)
         unsubscribe = viewModel.subscribe { refreshSelectedFile() }
+        project.service<TranslationSources>().subscribe(this) { refreshSelectedFile() }
         ApplicationManager.getApplication().messageBus.connect(this)
             .subscribe(PreferredLanguageListener.TOPIC, PreferredLanguageListener { refreshSelectedFile() })
         project.service<TranslationSessionController>().registerPreviewViewport(this) {
@@ -217,7 +217,7 @@ class HonnyakuTranslationPanel(
             override fun componentResized(event: java.awt.event.ComponentEvent) {
                 if (!disposed && !project.isDisposed) {
                     topScrollSpace?.update()
-                    if (!previewScrolledManually) FileEditorManager.getInstance(project).selectedTextEditor?.let { syncWithEditor(it) }
+                    if (!previewScrolledManually) project.service<TranslationSources>().current?.editor?.let { syncWithEditor(it) }
                 }
             }
         })
@@ -227,8 +227,8 @@ class HonnyakuTranslationPanel(
                     event.propertyName == EditorEx.PROP_FONT_SIZE_2D) {
                     (event.source as? Editor)?.takeIf {
                         !disposed && !project.isDisposed && !it.isDisposed &&
-                            it === FileEditorManager.getInstance(project).selectedTextEditor &&
-                            it.document === sourceDocument
+                            it === project.service<TranslationSources>().current?.editor &&
+                            project.service<TranslationSources>().current?.document === sourceDocument
                     }?.let {
                         syncFontSize(it)
                         syncWithEditor(it)
@@ -282,12 +282,13 @@ class HonnyakuTranslationPanel(
         usageLabel.updateUsage(viewModel.usage(uri), viewModel.usageSessions(uri))
         modelSelector.updateCatalog(viewModel.modelCatalog)
         modelSelector.updateReasoningEffort(viewModel.reasoningEffort(uri))
-        val editor = FileEditorManager.getInstance(project).selectedTextEditor
-            ?.takeIf { editorMatchesUri(it, uri) }
+        val selectedSource = project.service<TranslationSources>().current
+        val editor = selectedSource?.editor?.takeIf { editorMatchesUri(it, uri) }
         val file = uri?.let {
             runCatching { LocalFileSystem.getInstance().findFileByNioFile(java.nio.file.Path.of(URI(it))) }.getOrNull()
         }
-        sourceDocument = editor?.document ?: file?.let { FileDocumentManager.getInstance().getDocument(it) }
+        sourceDocument = selectedSource?.takeIf { it.editor === editor }?.document
+            ?: file?.let { FileDocumentManager.getInstance().getDocument(it) }
         if (uri != displayedUri) {
             previewScrolledManually = false
             displayedUri = uri
@@ -363,14 +364,14 @@ class HonnyakuTranslationPanel(
 
     private fun editorMatchesUri(editor: Editor, uri: String?): Boolean {
         if (uri == null || editor.isDisposed) return false
-        val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return false
+        val file = project.service<TranslationSources>().current?.takeIf { it.editor === editor }?.file ?: return false
         return VfsUtilCore.virtualToIoFile(file).toURI().normalize() == URI(uri).normalize()
     }
 
     private fun syncWithEditor(editor: Editor) {
-        if (disposed || project.isDisposed || editor.isDisposed || !isShowing ||
-            editor !== FileEditorManager.getInstance(project).selectedTextEditor ||
-            editor.document !== sourceDocument) return
+        if (disposed || project.isDisposed || editor.isDisposed || !isShowing) return
+        val source = project.service<TranslationSources>().current ?: return
+        if (editor !== source.editor || source.document !== sourceDocument) return
         syncFontSize(editor)
         previewScrolledManually = false
         // Match the line at the preview viewport's physical top, including variable-height headers.
@@ -378,7 +379,8 @@ class HonnyakuTranslationPanel(
             viewer.contentComponent, Point(0, viewer.scrollingModel.visibleArea.y), editor.contentComponent,
         ).y
         val offset = editor.logicalPositionToOffset(editor.xyToLogicalPosition(Point(0, sourceY)))
-        val target = projection.displayOffset(offset).coerceIn(0, viewer.document.textLength)
+        val sourceOffset = source.sourceOffset(offset)
+        val target = projection.displayOffset(sourceOffset).coerceIn(0, viewer.document.textLength)
         val withinLine = sourceY - editor.offsetToXY(offset).y
         val y = viewer.offsetToXY(target).y + withinLine * viewer.lineHeight / editor.lineHeight.coerceAtLeast(1)
         viewer.scrollingModel.disableAnimation()
@@ -453,7 +455,6 @@ internal fun TranslationPreferences.resolvedTarget(source: String): String =
 
 internal fun TranslationPreferences.previewLanguage(source: String): String =
     resolvedTarget(source)
-
 
 /** Keep the popup wide enough for native names while the closed control displays a code. */
 internal class TranslationLanguageComboBox(values: Array<String> = emptyArray()) : ComboBox<String>(values) {
@@ -591,7 +592,6 @@ internal class TranslationLanguagePanel(
         updateSelection()
     }
 }
-
 
 internal class TranslationModelPanel(
     private val settings: TranslationPreferences,
