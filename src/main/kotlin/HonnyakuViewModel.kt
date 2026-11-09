@@ -38,6 +38,8 @@ class HonnyakuViewModel(
     fun translation(uri: String?): TranslationUpdate? = uri?.let { translations[key(it)] }
     fun history(uri: String?): List<TranslationUpdate> =
         if (uri == null) emptyList() else history.filter { key(it.uri) == key(uri) }
+    internal fun previewTranslations(uri: String?): List<TranslationUpdate> =
+        history(uri) + listOfNotNull(translation(uri)?.takeIf { it.partial })
     fun clearTranslationCache(uri: String, language: String) {
         val normalized = key(uri)
         history.removeAll { key(it.uri) == normalized && it.targetLanguage == language }
@@ -57,7 +59,19 @@ class HonnyakuViewModel(
     internal fun pendingBlocks(uri: String?, source: String): List<SourceBlock> =
         uri?.let { activity.pending(key(it).toString(), source) }.orEmpty()
     fun pendingCount(uri: String?): Int = uri?.let { activity.count(key(it).toString()) } ?: 0
-    fun clearActivity() { activity.clear(); changed() }
+    fun clearActivity() {
+        activity.clear()
+        discardPartialTranslations()
+        changed()
+    }
+
+    private fun discardPartialTranslations() {
+        translations.filterValues { it.partial }.keys.forEach { uri ->
+            val committed = history.lastOrNull { key(it.uri) == uri }
+            if (committed == null) translations.remove(uri)
+            else translations[uri] = committed
+        }
+    }
 
     fun receiveModelCatalog(catalog: TranslationModelCatalog) {
         modelCatalog = catalog
@@ -72,6 +86,12 @@ class HonnyakuViewModel(
     }
 
     fun receiveTranslation(update: TranslationUpdate, sessionId: String = currentSession) {
+        if (update.partial) {
+            translations[key(update.uri)] = update
+            activity.progress(key(update.uri).toString(), update.version, update.translations)
+            changed()
+            return
+        }
         if (update.pending) {
             activeUsageUris[sessionId] = update.uri
             activity.started(key(update.uri).toString(), update.version, update.translations)
@@ -82,7 +102,7 @@ class HonnyakuViewModel(
         if (update.translations.isNotEmpty()) {
             val previous = translation(update.uri)
             translations[key(update.uri)] = update
-            if (previous?.translations != update.translations || previous.targetLanguage != update.targetLanguage) {
+            if (previous?.partial == true || previous?.translations != update.translations || previous.targetLanguage != update.targetLanguage) {
                 history.add(update)
                 saveHistory(history.toList())
             }
@@ -112,6 +132,7 @@ class HonnyakuViewModel(
 
     fun resetRuntimeState() {
         activity.clear()
+        discardPartialTranslations()
         pendingUsages.clear()
         activeUsageUris.clear()
         currentSession = java.util.UUID.randomUUID().toString()
@@ -151,6 +172,15 @@ internal class TranslationActivity {
     fun completed(uri: String, version: Int) {
         val key = URI(uri).normalize()
         if ((pending[key]?.version ?: return) <= version) pending.remove(key)
+    }
+
+    fun progress(uri: String, version: Int, completed: List<ParagraphTranslation>) {
+        val key = URI(uri).normalize()
+        val current = pending[key] ?: return
+        if (current.version != version) return
+        pending[key] = current.copy(lines = current.lines.filter { line ->
+            completed.none { it.sourceText == line.sourceText && it.range == line.range }
+        })
     }
 
     fun pending(uri: String, source: String): List<SourceBlock> {

@@ -317,7 +317,7 @@ class HonnyakuTranslationPanel(
         }
         languagePanel.updateCacheAction(language, !clearingCache && viewModel.pendingCount(uri) == 0 && sourceDocument != null &&
             viewModel.history(uri).any { it.targetLanguage == language })
-        projection = translationDocument(sourceDocument?.text.orEmpty(), viewModel.history(uri).filter {
+        projection = translationDocument(sourceDocument?.text.orEmpty(), viewModel.previewTranslations(uri).filter {
             it.targetLanguage == language
         })
         updateViewerText(projection.text)

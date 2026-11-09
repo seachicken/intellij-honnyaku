@@ -230,6 +230,7 @@ data class TranslationUpdate(
     val tokenUsage: TranslationTokenUsage? = null,
     val pending: Boolean = false,
     val restored: Boolean = false,
+    val partial: Boolean = false,
 )
 
 data class ParagraphTranslation(val sourceText: String, val text: String?, val error: String?, val range: Range? = null)

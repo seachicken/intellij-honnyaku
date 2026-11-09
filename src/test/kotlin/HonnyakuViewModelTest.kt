@@ -7,6 +7,74 @@ import org.eclipse.lsp4j.Position
 
 class HonnyakuViewModelTest {
     @Test
+    fun `session termination removes partial previews without committed history`() {
+        for (reset in listOf(false, true)) {
+            var saves = 0
+            val model = HonnyakuViewModel(saveHistory = { saves++ })
+            val result = translation(a)
+            model.receiveTranslation(result.copy(pending = true))
+            model.receiveTranslation(result.copy(partial = true))
+            var notified = false
+            model.subscribe {
+                notified = true
+                assertNull(model.translation(a))
+                assertTrue(model.previewTranslations(a).isEmpty())
+                assertEquals(0, model.pendingCount(a))
+            }
+
+            if (reset) model.resetRuntimeState() else model.clearActivity()
+
+            assertTrue(notified)
+            assertTrue(model.history(a).isEmpty())
+            assertEquals(0, saves)
+        }
+    }
+
+    @Test
+    fun `session termination restores latest committed translation and preserves other files`() {
+        for (reset in listOf(false, true)) {
+            val first = translation(a)
+            val latest = translation(a, "latest").copy(targetLanguage = "fr")
+            val other = translation(b)
+            var saves = 0
+            val model = HonnyakuViewModel(listOf(first, latest, other), saveHistory = { saves++ })
+            val interrupted = translation("file:/a.md", "unfinished").copy(version = 2)
+            model.receiveTranslation(interrupted.copy(pending = true))
+            model.receiveTranslation(interrupted.copy(partial = true))
+
+            if (reset) model.resetRuntimeState() else model.clearActivity()
+
+            assertEquals(latest, model.translation(a))
+            assertEquals(listOf(first, latest), model.previewTranslations(a))
+            assertEquals(other, model.translation(b))
+            assertEquals(listOf(other), model.previewTranslations(b))
+            assertEquals(0, model.pendingCount(a))
+            assertEquals(0, saves)
+        }
+    }
+
+    @Test
+    fun `streamed rows display before completion without persisting or ending activity`() {
+        var saves = 0
+        val model = HonnyakuViewModel(saveHistory = { saves++ })
+        val first = translation(a)
+        val second = first.translations.single().copy(sourceText = "second", text = "translated second")
+        val final = first.copy(translations = first.translations + second)
+        model.receiveTranslation(final.copy(pending = true))
+        model.receiveTranslation(first.copy(partial = true))
+        assertEquals(first.translations, model.translation(a)?.translations)
+        assertEquals(listOf(first.copy(partial = true)), model.previewTranslations(a))
+        assertEquals(1, model.pendingCount(a))
+        assertEquals(0, saves)
+        model.receiveTranslation(final.copy(partial = true))
+        model.receiveTranslation(final)
+        assertEquals(0, model.pendingCount(a))
+        assertEquals(listOf(final), model.history(a))
+        assertEquals(listOf(final), model.previewTranslations(a))
+        assertEquals(1, saves)
+    }
+
+    @Test
     fun `history keeps earlier paragraphs and ignores empty and repeated notifications`() {
         val model = HonnyakuViewModel()
         val first = translation(a)
