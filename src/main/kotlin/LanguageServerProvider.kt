@@ -14,7 +14,6 @@ import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileTypes.LanguageFileType
 import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.Lsp4jClient
@@ -35,7 +34,7 @@ import org.eclipse.lsp4j.services.LanguageServer
 
 class LanguageServerProvider : LspServerSupportProvider {
     override fun fileOpened(project: Project, file: VirtualFile, serverStarter: LspServerSupportProvider.LspServerStarter) {
-        if (isProjectTranslationFile(project, file)) {
+        if (isTranslationFile(file)) {
             val sessionController = project.service<TranslationSessionController>()
             sessionController.syncVisibility()
             if (!sessionController.isVisible) return
@@ -47,14 +46,13 @@ class LanguageServerProvider : LspServerSupportProvider {
 }
 
 // Scroll and Swing layout callbacks can run on the EDT without model read access.
-internal fun isProjectTranslationFile(project: Project, file: VirtualFile): Boolean =
+internal fun isTranslationFile(file: VirtualFile): Boolean =
     ReadAction.compute<Boolean, RuntimeException> {
         !file.isDirectory && !file.fileType.isBinary &&
             (isWholeDocumentTranslation(file) ||
                 (file.fileType as? LanguageFileType)?.language?.let {
                     LanguageParserDefinitions.INSTANCE.forLanguage(it) != null
-                } == true) &&
-            ProjectFileIndex.getInstance(project).isInContent(file)
+                } == true)
     }
 
 internal class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "Honnyaku") {
@@ -96,7 +94,7 @@ internal class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServer
         }
     }
 
-    override fun isSupportedFile(file: VirtualFile): Boolean = isProjectTranslationFile(project, file)
+    override fun isSupportedFile(file: VirtualFile): Boolean = isTranslationFile(file)
 
     override fun startServerProcess(): OSProcessHandler {
         check(project.service<TranslationSessionController>().isVisible) { "Open Honnyaku to enable translation" }

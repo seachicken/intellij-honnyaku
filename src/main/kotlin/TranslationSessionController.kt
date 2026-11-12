@@ -146,7 +146,7 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val editor = source.editor
         val document = source.document
         val file = source.file
-        if (!isProjectTranslationFile(project, file)) return
+        if (!isTranslationFile(file)) return
         val preview = previewViewport?.invoke()?.takeIf { it.document === document }
         val area = editor.scrollingModel.visibleArea
         if (preview == null && (area.height <= 0 || area.width <= 0)) return

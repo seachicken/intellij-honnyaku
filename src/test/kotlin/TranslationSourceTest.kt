@@ -98,7 +98,7 @@ class TranslationSourceTest : BasePlatformTestCase() {
         SwingUtilities.invokeLater {
             try {
                 assertFalse(ApplicationManager.getApplication().isReadAccessAllowed)
-                assertTrue(isProjectTranslationFile(project, file))
+                assertTrue(isTranslationFile(file))
                 val source = project.service<TranslationSources>().current!!
                 assertEquals(file, source.file)
                 assertFalse(ApplicationManager.getApplication().isReadAccessAllowed)

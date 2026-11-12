@@ -87,7 +87,7 @@ internal fun realTranslationSource(project: Project, editor: Editor): Translatio
     if (editor.isDisposed) return null
     val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return null
     // A revision's highlight file may be the real file; only accept its actual Document.
-    if (!file.isInLocalFileSystem || !isProjectTranslationFile(project, file)) return null
+    if (!file.isInLocalFileSystem || !isTranslationFile(file)) return null
     return TranslationSource(editor, editor.document, file)
 }
 
@@ -103,7 +103,7 @@ internal fun diffTranslationSource(project: Project, viewer: FrameDiffTool.DiffV
     return if (viewer is UnifiedDiffViewer) {
         val document = viewer.getDocument(Side.RIGHT)
         val file = FileDocumentManager.getInstance().getFile(document) ?: return null
-        if (!file.isInLocalFileSystem || !isProjectTranslationFile(project, file)) return null
+        if (!file.isInLocalFileSystem || !isTranslationFile(file)) return null
         TranslationSource(
             editor = viewer.editor,
             document = document,

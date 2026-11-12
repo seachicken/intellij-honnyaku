@@ -93,7 +93,7 @@ class HonnyakuSettings(private val project: Project) : PersistentStateComponent<
     }
 
     private fun selectedFileUri(): String? = project.service<TranslationSources>().current?.file
-        ?.takeIf { isProjectTranslationFile(project, it) }
+        ?.takeIf { isTranslationFile(it) }
         ?.let { VfsUtilCore.virtualToIoFile(it).toURI().toASCIIString() }
 
     override fun dispose() { viewModel.dispose() }
