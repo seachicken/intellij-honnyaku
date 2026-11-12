@@ -54,8 +54,7 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Improvements</h2>
         <ul>
-            <li>Show translation previews for local project files in side-by-side and unified diff viewers</li>
-            <li>Translate string contents recognized by installed language plugins, in addition to comments</li>
+            <li>Translate local files outside the project in editors and diff viewers</li>
         </ul>
     """.trimIndent()
     nativeVariants {
