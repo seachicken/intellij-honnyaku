@@ -54,7 +54,7 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Improvements</h2>
         <ul>
-            <li>Translate local files outside the project in editors and diff viewers</li>
+            <li>Refine translation instructions to discourage added explanations and preserve incomplete fragments</li>
         </ul>
     """.trimIndent()
     nativeVariants {
