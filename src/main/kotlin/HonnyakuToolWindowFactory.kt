@@ -81,15 +81,20 @@ internal class TranslationScrollListener(
 
 class HonnyakuToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
+        val panel = HonnyakuTranslationPanel(
+            project,
+            project.service<HonnyakuSettings>().viewModel,
+            project.service<HonnyakuSettings>().preferences,
+        ) {
+            LspServerManager.getInstance(project).stopAndRestartIfNeeded(LanguageServerProvider::class.java)
+        }
+        toolWindow.setTitleActions(panel.titleActions)
+        toolWindow.component.putClientProperty(
+            com.intellij.openapi.wm.impl.content.ToolWindowContentUi.DONT_HIDE_TOOLBAR_IN_HEADER, true,
+        )
         toolWindow.contentManager.addContent(
-            ContentFactory.getInstance().createContent(HonnyakuTranslationPanel(
-                project,
-                project.service<HonnyakuSettings>().viewModel,
-                project.service<HonnyakuSettings>().preferences,
-            ) {
-                LspServerManager.getInstance(project).stopAndRestartIfNeeded(LanguageServerProvider::class.java)
-            }, null, false).apply {
-                setDisposer(component as HonnyakuTranslationPanel)
+            ContentFactory.getInstance().createContent(panel, null, false).apply {
+                setDisposer(panel)
             }
         )
         project.service<TranslationSessionController>().syncVisibility()
@@ -140,7 +145,7 @@ class HonnyakuTranslationPanel(
     private var syncingScroll = false
     private var previewScrolledManually = false
     private var clearingCache = false
-    private val languagePanel = TranslationLanguagePanel(modelSettings, { refreshSelectedFile() }, {
+    private val languageControls = TranslationLanguageControls(modelSettings, { refreshSelectedFile() }, {
         com.intellij.openapi.options.ShowSettingsUtil.getInstance().showSettingsDialog(project, HonnyakuConfigurable::class.java)
     }) {
         val uri = displayedUri
@@ -154,16 +159,12 @@ class HonnyakuTranslationPanel(
             }
         }
     }
-    private val topScrollSpace = viewer.inlayModel.addBlockElement(0, true, true, 0,
-        object : com.intellij.openapi.editor.EditorCustomElementRenderer {
-            override fun calcWidthInPixels(inlay: com.intellij.openapi.editor.Inlay<*>) = 1
-            override fun calcHeightInPixels(inlay: com.intellij.openapi.editor.Inlay<*>) = languagePanel.height.coerceAtLeast(1)
-        })
+    val titleActions: List<AnAction> get() = languageControls.actions
 
     init {
         viewer.contentComponent.accessibleContext.accessibleName = "Translated document"
+        viewer.settings.isAdditionalPageAtBottom = true
         add(viewer.component, BorderLayout.CENTER)
-        add(languagePanel, BorderLayout.NORTH)
         add(JPanel(BorderLayout(JBUI.scale(12), 0)).apply {
             border = JBUI.Borders.compound(
                 JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0),
@@ -216,9 +217,8 @@ class HonnyakuTranslationPanel(
         viewer.component.addComponentListener(object : java.awt.event.ComponentAdapter() {
             override fun componentResized(event: java.awt.event.ComponentEvent) {
                 ApplicationManager.getApplication().invokeLater {
-                    if (!disposed && !project.isDisposed) {
-                        topScrollSpace?.update()
-                        if (!previewScrolledManually) project.service<TranslationSources>().current?.editor?.let { syncWithEditor(it) }
+                    if (!disposed && !project.isDisposed && !previewScrolledManually) {
+                        project.service<TranslationSources>().current?.editor?.let { syncWithEditor(it) }
                     }
                 }
             }
@@ -232,10 +232,7 @@ class HonnyakuTranslationPanel(
                             !disposed && !project.isDisposed && !it.isDisposed &&
                                 it === project.service<TranslationSources>().current?.editor &&
                                 project.service<TranslationSources>().current?.document === sourceDocument
-                        }?.let {
-                            syncFontSize(it)
-                            syncWithEditor(it)
-                        }
+                        }?.let(::syncWithEditor)
                     }
                 }
             }, this)
@@ -301,7 +298,6 @@ class HonnyakuTranslationPanel(
         if (editor != null) {
             // An editor's scheme is bound to that editor; sharing it also shares its font cache.
             (viewer as EditorEx).setColorsScheme(viewer.createBoundColorSchemeDelegate(editor.colorsScheme))
-            viewer.setFontSize(editor.colorsScheme.editorFontSize2D)
             syncFontSize(editor)
             viewer.settings.isUseSoftWraps = editor.settings.isUseSoftWraps
             viewer.settings.isLineNumbersShown = editor.settings.isLineNumbersShown
@@ -312,12 +308,12 @@ class HonnyakuTranslationPanel(
         val language = modelSettings.previewLanguage(sourceDocument?.text.orEmpty())
         val previousLanguage = activeLanguage
         activeLanguage = language
-        languagePanel.updateTarget(modelSettings.resolvedTarget(sourceDocument?.text.orEmpty()))
+        languageControls.updateTarget(modelSettings.resolvedTarget(sourceDocument?.text.orEmpty()))
         if (previousLanguage != null && previousLanguage != language) {
             viewModel.resetRuntimeState()
             restartServer()
         }
-        languagePanel.updateCacheAction(language, !clearingCache && viewModel.pendingCount(uri) == 0 && sourceDocument != null &&
+        languageControls.updateCacheAction(language, !clearingCache && viewModel.pendingCount(uri) == 0 && sourceDocument != null &&
             viewModel.history(uri).any { it.targetLanguage == language })
         projection = translationDocument(sourceDocument?.text.orEmpty(), viewModel.previewTranslations(uri).filter {
             it.targetLanguage == language
@@ -393,11 +389,9 @@ class HonnyakuTranslationPanel(
         viewer.scrollingModel.disableAnimation()
         syncingScroll = true
         try {
-            // Even a one-line document needs enough scroll range to compensate for the header
-            // and the block above its first line. Keep that range as editor padding, not text.
-            viewer.settings.isAdditionalPageAtBottom = true
+            // Allow short documents to align with the source editor below its header.
             viewer.settings.additionalLinesCount =
-                (viewer.scrollingModel.visibleArea.height + languagePanel.height * 2) / viewer.lineHeight.coerceAtLeast(1) + 1
+                viewer.scrollingModel.visibleArea.height / viewer.lineHeight.coerceAtLeast(1) + 1
             viewer.scrollingModel.scrollVertically(y.coerceAtLeast(0))
         } finally {
             syncingScroll = false
@@ -463,99 +457,48 @@ internal fun TranslationPreferences.resolvedTarget(source: String): String =
 internal fun TranslationPreferences.previewLanguage(source: String): String =
     resolvedTarget(source)
 
-/** Keep the popup wide enough for native names while the closed control displays a code. */
-internal class TranslationLanguageComboBox(values: Array<String> = emptyArray()) : ComboBox<String>(values) {
-    override fun getMinimumPopupWidth(): Int {
-        val list = javax.swing.JList(model).apply { font = this@TranslationLanguageComboBox.font }
-        val contentWidth = (0 until itemCount).maxOfOrNull { index ->
-            renderer.getListCellRendererComponent(list, getItemAt(index), index, false, false).preferredSize.width
-        } ?: 0
-        return maxOf(super.getMinimumPopupWidth(), contentWidth + insets.left + insets.right + JBUI.scale(24))
-    }
-}
-
-internal class ToolbarIconButton(icon: javax.swing.Icon) : JButton(icon) {
-    init {
-        isRolloverEnabled = true
-        preferredSize = JBUI.size(24, 24)
-        margin = JBUI.emptyInsets()
-        isOpaque = false
-        isContentAreaFilled = false
-        isBorderPainted = false
-    }
-
-    override fun paintComponent(graphics: Graphics) {
-        if (isEnabled && (model.isRollover || model.isPressed || hasFocus())) {
-            val background = graphics.create() as Graphics2D
-            try {
-                background.setRenderingHint(
-                    java.awt.RenderingHints.KEY_ANTIALIASING,
-                    java.awt.RenderingHints.VALUE_ANTIALIAS_ON,
-                )
-                background.color = if (model.isPressed) {
-                    JBColor.namedColor("ActionButton.pressedBackground", JBColor(0xC7C7C7, 0x5C5C5C))
-                } else {
-                    JBColor.namedColor("ActionButton.hoverBackground", JBColor(0xDFDFDF, 0x4C5052))
-                }
-                val arc = JBUI.scale(6)
-                background.fillRoundRect(0, 0, width, height, arc, arc)
-            } finally {
-                background.dispose()
-            }
-        }
-        super.paintComponent(graphics)
-    }
-}
-
-internal class TranslationLanguagePanel(
+/** Native title-bar actions keep translation controls outside the document viewport. */
+internal class TranslationLanguageControls(
     private val settings: TranslationPreferences,
     private val onChange: () -> Unit,
     onSettings: () -> Unit,
     onClearCache: () -> Unit = {},
-) : JPanel(BorderLayout()) {
+) {
     private var automaticLanguage = "en"
-    private var updatingTarget = false
-    private val target = TranslationLanguageComboBox(arrayOf("Auto", "Preferred") + translationLanguages)
-    private val clearCache = ToolbarIconButton(com.intellij.icons.AllIcons.Actions.Refresh).apply {
-        isEnabled = false
-        disabledIcon = com.intellij.openapi.util.IconLoader.getDisabledIcon(icon)
-        accessibleContext.accessibleName = "Retranslate"
-        addActionListener { onClearCache() }
-    }
-
-    init {
-        border = JBUI.Borders.empty(6)
-        target.setMinLength(Int.MAX_VALUE)
-        val renderer = target.renderer
-        target.renderer = ListCellRenderer { list, value, index, selected, focused ->
-            renderer.getListCellRendererComponent(list, targetLabel(value, compact = index < 0), index, selected, focused)
+    private var canClearCache = false
+    private var cacheLanguage = ""
+    private val target = object : com.intellij.openapi.actionSystem.ex.ComboBoxAction(), DumbAware {
+        init { isSmallVariant = true }
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(event: AnActionEvent) {
+            event.presentation.text = targetLabel(settings.targetLanguage, compact = true)
+            event.presentation.description = "Translation target: ${targetLabel(settings.targetLanguage, compact = false)}"
         }
-        target.selectedItem = settings.targetLanguage
-        target.accessibleContext.accessibleName = "Target language"
-        target.addActionListener {
-            if (updatingTarget) return@addActionListener
-            val language = target.selectedItem as? String ?: return@addActionListener
+        override fun createPopupActionGroup(button: JComponent) = selectionMenu(
+            "Target language",
+            (listOf("Auto", "Preferred") + translationLanguages.filter { it != settings.preferredLanguage })
+                .map { it to targetLabel(it, compact = false) },
+            settings.targetLanguage,
+        ) { language ->
             if (settings.targetLanguage != language) {
                 settings.targetLanguage = language
-                updateSelection()
                 onChange()
             }
         }
-        add(target, BorderLayout.WEST)
-        add(JPanel(java.awt.GridBagLayout()).apply {
-            isOpaque = false
-            add(clearCache)
-            add(ToolbarIconButton(com.intellij.icons.AllIcons.General.Settings).apply {
-                toolTipText = "Honnyaku settings"
-                accessibleContext.accessibleName = toolTipText
-                addActionListener { onSettings() }
-            }, java.awt.GridBagConstraints().apply {
-                gridx = 1
-                insets = JBUI.insetsLeft(6)
-            })
-        }, BorderLayout.EAST)
-        updateSelection()
     }
+    private val clearCache = object : DumbAwareAction("Retranslate", "Retranslate", com.intellij.icons.AllIcons.Actions.Refresh) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(event: AnActionEvent) {
+            event.presentation.isEnabled = canClearCache
+            event.presentation.description = "Retranslate in $cacheLanguage"
+        }
+        override fun actionPerformed(event: AnActionEvent) = onClearCache()
+    }
+    val actions: List<AnAction> = listOf(target, clearCache,
+        object : DumbAwareAction("Honnyaku settings", "Honnyaku settings", com.intellij.icons.AllIcons.General.Settings) {
+            override fun actionPerformed(event: AnActionEvent) = onSettings()
+        },
+    )
 
     private fun targetLabel(language: String?, compact: Boolean): String = when (language) {
         "Auto" -> "Auto (${languageOption(automaticLanguage)?.displayCode ?: automaticLanguage})"
@@ -563,40 +506,13 @@ internal class TranslationLanguagePanel(
         else -> if (compact) languageOption(language)?.displayCode ?: language.orEmpty() else languageLabel(language)
     }
 
-    private fun updateSelection() {
-        val languages = arrayOf("Auto", "Preferred") + translationLanguages.filter {
-            it != settings.preferredLanguage
-        }
-        val currentLanguages = (0 until target.itemCount).map { target.getItemAt(it) }
-        if (currentLanguages != languages.toList()) {
-            updatingTarget = true
-            try {
-                target.model = javax.swing.DefaultComboBoxModel(languages).apply {
-                    // Preserve an existing explicit target even when it is hidden from the popup.
-                    selectedItem = settings.targetLanguage
-                }
-            } finally {
-                updatingTarget = false
-            }
-        }
-        target.prototypeDisplayValue = settings.targetLanguage
-        target.toolTipText = when (settings.targetLanguage) {
-            "Auto" -> "Auto target: ${languageLabel(automaticLanguage)}"
-            "Preferred" -> "Preferred target: ${languageLabel(settings.preferredLanguage)}"
-            else -> "Translation target: ${languageLabel(settings.targetLanguage)}"
-        }
-        target.revalidate()
-        target.repaint()
-    }
-
     fun updateCacheAction(language: String, enabled: Boolean) {
-        clearCache.isEnabled = enabled
-        clearCache.toolTipText = "Retranslate in $language"
+        canClearCache = enabled
+        cacheLanguage = language
     }
 
     fun updateTarget(language: String) {
         if (settings.targetLanguage == "Auto") automaticLanguage = language
-        updateSelection()
     }
 }
 
