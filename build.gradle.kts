@@ -52,9 +52,13 @@ intellijPlatform {
     }
     pluginConfiguration.ideaVersion.sinceBuild = "261"
     pluginConfiguration.changeNotes = """
+        <h2>Bug Fixes</h2>
+        <ul>
+            <li>Fix translation not starting on the first request in diff views</li>
+        </ul>
         <h2>Improvements</h2>
         <ul>
-            <li>Refine translation instructions to discourage added explanations and preserve incomplete fragments</li>
+            <li>Update bundled Honnyaku to 0.4.0</li>
         </ul>
     """.trimIndent()
     nativeVariants {
