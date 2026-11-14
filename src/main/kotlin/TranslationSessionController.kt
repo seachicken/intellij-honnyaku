@@ -38,7 +38,6 @@ import org.eclipse.lsp4j.DidOpenTextDocumentParams
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
 import org.eclipse.lsp4j.TextDocumentItem
-import org.eclipse.lsp4j.jsonrpc.ResponseErrorException
 
 @Service(Service.Level.PROJECT)
 class TranslationSessionController(private val project: Project) : Disposable {
@@ -386,20 +385,16 @@ internal fun translateSnapshot(
     languageId: String,
     snapshotIsCurrent: () -> Boolean = { true },
 ) {
-    try {
-        server.sendRequestSync(150_000) { (it as HonnyakuLanguageServer).translateVisible(params) }
-    } catch (exception: Exception) {
-        val rpc = generateSequence<Throwable>(exception) { it.cause }
-            .filterIsInstance<ResponseErrorException>().firstOrNull()
-        if (!diffOnly || rpc?.responseError?.code != -32801 || !snapshotIsCurrent()) throw exception
-        // Recover a closed document on the same connection immediately before the snapshot.
-        // Normal IDE-managed documents continue to use the platform's synchronization.
-        server.sendRequestSync(150_000) {
+    // The platform may consume RPC errors instead of throwing them to this caller.
+    // Diff-only documents are outside its didOpen lifecycle, so register the snapshot first.
+    if (diffOnly && !snapshotIsCurrent()) return
+    server.sendRequestSync(150_000) {
+        if (diffOnly) {
             val doc = params.textDocument
             it.textDocumentService.didOpen(
                 DidOpenTextDocumentParams(TextDocumentItem(doc.uri, languageId, doc.version, doc.text)),
             )
-            (it as HonnyakuLanguageServer).translateVisible(params)
         }
+        (it as HonnyakuLanguageServer).translateVisible(params)
     }
 }

@@ -124,32 +124,30 @@ class TranslationSessionControllerTest : BasePlatformTestCase() {
         }
     }
 
-    fun testDiffOnlyClosedDocumentIsOpenedBeforeRetryingTheSameSnapshot() {
-        val events = mutableListOf<String>()
-        translateSnapshot(server(events, -32801), params, true, "plaintext")
-        assertEquals(listOf("translate", "open", "translate"), events)
-    }
-
-    fun testAlreadySynchronizedDiffDoesNotSendDuplicateDidOpen() {
+    fun testDiffOnlyDocumentIsOpenedBeforeItsFirstTranslation() {
         val events = mutableListOf<String>()
         translateSnapshot(server(events), params, true, "plaintext")
+        assertEquals(listOf("open", "translate"), events)
+    }
+
+    fun testNormalEditorUsesPlatformDocumentSynchronization() {
+        val events = mutableListOf<String>()
+        translateSnapshot(server(events), params, false, "plaintext")
         assertEquals(listOf("translate"), events)
     }
 
-    fun testNormalEditorAndUnrelatedFailuresDoNotReopenDocuments() {
-        for ((isDiff, code) in listOf(false to -32801, true to -32602)) {
-            val events = mutableListOf<String>()
-            assertThrows(Exception::class.java) { translateSnapshot(server(events, code), params, isDiff, "plaintext") }
-            assertEquals(listOf("translate"), events)
-        }
-    }
-
-    fun testAnEditAfterTheRequestPreventsReopeningAnOutdatedSnapshot() {
+    fun testNormalEditorFailuresDoNotReopenDocuments() {
         val events = mutableListOf<String>()
         assertThrows(Exception::class.java) {
-            translateSnapshot(server(events, -32801), params, true, "plaintext") { false }
+            translateSnapshot(server(events, -32801), params, false, "plaintext")
         }
         assertEquals(listOf("translate"), events)
+    }
+
+    fun testAnEditBeforeTheRequestPreventsOpeningAnOutdatedDiffSnapshot() {
+        val events = mutableListOf<String>()
+        translateSnapshot(server(events), params, true, "plaintext") { false }
+        assertEmpty(events)
     }
 
     private inline fun <reified T> proxy(crossinline invoke: (String, Array<out Any?>) -> Any?): T =
