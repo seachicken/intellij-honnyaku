@@ -54,11 +54,7 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Bug Fixes</h2>
         <ul>
-            <li>Fix translation not starting on the first request in diff views</li>
-        </ul>
-        <h2>Improvements</h2>
-        <ul>
-            <li>Update bundled Honnyaku to 0.4.0</li>
+            <li>Keep preview line numbers aligned with the source when translations add or remove line breaks</li>
         </ul>
     """.trimIndent()
     nativeVariants {
