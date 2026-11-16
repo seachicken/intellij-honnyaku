@@ -162,7 +162,7 @@ class TranslationScrollMappingTest {
         val source = "# Header\n\nfirst\n\nunchanged\n\nsecond\n"
         val history = listOf(result(paragraph("second", "last")), result(paragraph("first", "new\ntranslation")))
         val display = translationDocument(source, history)
-        assertEquals("# Header\n\nnew\ntranslation\n\nunchanged\n\nlast\n", display.text)
+        assertEquals("# Header\n\nnew translation\n\nunchanged\n\nlast\n", display.text)
         assertEquals(display.text.indexOf("unchanged"), display.displayOffset(source.indexOf("unchanged")))
         assertEquals(display.text.indexOf("last"), display.displayOffset(source.indexOf("second")))
         assertEquals(display.text.length, display.displayOffset(source.length))
@@ -195,8 +195,24 @@ class TranslationScrollMappingTest {
         val source = "$original\n\n$original"
         val history = listOf(result(paragraph(original, "old")), result(paragraph(original, "new")))
         val display = translationDocument(source, history)
-        assertEquals("new\n\nnew", display.text)
-        assertEquals(5, display.displayOffset(source.lastIndexOf("日本語")))
+        assertEquals("new\n\n\nnew\n", display.text)
+        assertEquals(6, display.displayOffset(source.lastIndexOf("日本語")))
+    }
+
+    @Test
+    fun `display aligns each source line independently of translated lengths`() {
+        val source = "a very long first line\nb\n\nafter"
+        val display = translationDocument(source, listOf(result(
+            paragraph("a very long first line\nb", "short\na much longer second line\nextra"),
+        )))
+        assertEquals("short\na much longer second line extra\n\nafter", display.text)
+        val sourceLines = source.indices.filter { it == 0 || source[it - 1] == '\n' }
+        val displayLines = display.text.indices.filter { it == 0 || display.text[it - 1] == '\n' }
+        sourceLines.zip(displayLines).forEach { (original, translated) ->
+            assertEquals(translated, display.displayOffset(original))
+            assertEquals(original, display.sourceOffset(translated))
+        }
+        assertEquals(source.count { it == '\n' }, display.text.count { it == '\n' })
     }
 
     @Test

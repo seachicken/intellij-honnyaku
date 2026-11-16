@@ -146,7 +146,7 @@ internal data class TranslationDocument(val text: String, val ranges: List<Trans
     }
 }
 
-/** Keep the complete document, replacing only source paragraphs with successful translations. */
+/** Keep source line numbers while replacing matched ranges with successful translations. */
 internal fun translationDocument(source: String, history: List<TranslationUpdate>): TranslationDocument {
     data class Replacement(val start: Int, val end: Int, val text: String, val priority: Int)
     val candidates = mutableListOf<Replacement>()
@@ -194,10 +194,26 @@ internal fun translationDocument(source: String, history: List<TranslationUpdate
         text.append(value)
         ranges.add(TranslationTextRange(start, end, displayStart, text.length))
     }
+    fun appendTranslation(replacement: Replacement) {
+        val originalLines = source.substring(replacement.start, replacement.end).split('\n')
+        val translatedLines = replacement.text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        var start = replacement.start
+        originalLines.forEachIndexed { index, original ->
+            // Keep matching independent of display layout. Extra translated lines stay
+            // on the last source line; missing lines leave empty source slots.
+            val translated = if (index == originalLines.lastIndex) {
+                translatedLines.drop(index).joinToString(" ")
+            } else translatedLines.getOrElse(index) { "" }
+            val separator = if (index < originalLines.lastIndex) "\n" else ""
+            val end = start + original.length + separator.length
+            append(start, end, translated + separator)
+            start = end
+        }
+    }
     replacements.forEach {
         if (it.start >= cursor) {
             append(cursor, it.start, source.substring(cursor, it.start))
-            append(it.start, it.end, it.text)
+            appendTranslation(it)
             cursor = it.end
         }
     }
