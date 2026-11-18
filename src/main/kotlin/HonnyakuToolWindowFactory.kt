@@ -382,10 +382,13 @@ class HonnyakuTranslationPanel(
             viewer.contentComponent, Point(0, viewer.scrollingModel.visibleArea.y), editor.contentComponent,
         ).y
         val offset = editor.logicalPositionToOffset(editor.xyToLogicalPosition(Point(0, sourceY)))
-        val sourceOffset = source.sourceOffset(offset)
+        val line = editor.document.getLineNumber(offset)
+        // Anchor to the logical line, not a character column: translations wrap at
+        // different columns and can occupy a different number of visual rows.
+        val sourceOffset = source.sourceOffset(editor.document.getLineStartOffset(line))
         val target = projection.displayOffset(sourceOffset).coerceIn(0, viewer.document.textLength)
-        val withinLine = sourceY - editor.offsetToXY(offset).y
-        val y = viewer.offsetToXY(target).y + withinLine * viewer.lineHeight / editor.lineHeight.coerceAtLeast(1)
+        val targetLine = viewer.document.getLineNumber(target)
+        val y = translatedScrollY(sourceY, editor.lineBounds(line), viewer.lineBounds(targetLine))
         viewer.scrollingModel.disableAnimation()
         syncingScroll = true
         try {
@@ -405,6 +408,26 @@ class HonnyakuTranslationPanel(
         if (viewer.colorsScheme.getFont(EditorFontType.PLAIN).size2D != fontSize) {
             (viewer as EditorEx).setFontSize(fontSize)
         }
+    }
+}
+
+/** Actual laid-out bounds include soft wraps, without modifying either document. */
+private fun Editor.lineBounds(line: Int): IntRange {
+    val top = offsetToXY(document.getLineStartOffset(line)).y
+    val bottom = offsetToXY(document.getLineEndOffset(line)).y + lineHeight
+    return top until bottom.coerceAtLeast(top + 1)
+}
+
+internal fun translatedScrollY(sourceY: Int, source: IntRange, target: IntRange): Int {
+    val sourceHeight = (source.last - source.first + 1).coerceAtLeast(1)
+    val targetHeight = (target.last - target.first + 1).coerceAtLeast(1)
+    val withinLine = sourceY - source.first
+    // Outside the document (or above it due to a header), retain the extra space
+    // rather than stretching it by the wrapping ratio of the first/last line.
+    return when {
+        withinLine < 0 -> target.first + withinLine
+        withinLine >= sourceHeight -> target.last + 1 + withinLine - sourceHeight
+        else -> target.first + (withinLine.toLong() * targetHeight / sourceHeight).toInt()
     }
 }
 
