@@ -54,7 +54,8 @@ intellijPlatform {
     pluginConfiguration.changeNotes = """
         <h2>Bug Fixes</h2>
         <ul>
-            <li>Keep preview line numbers aligned with the source when translations add or remove line breaks</li>
+            <li>Keep preview scrolling aligned with the source when a translated line is empty</li>
+            <li>Prevent outdated translations from being reused after editing a multiline paragraph</li>
         </ul>
     """.trimIndent()
     nativeVariants {
