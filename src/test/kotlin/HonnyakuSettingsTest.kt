@@ -1,5 +1,7 @@
 package honnyaku
 
+import org.eclipse.lsp4j.Position
+import org.eclipse.lsp4j.Range
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -137,10 +139,10 @@ class TranslationScrollMappingTest {
     }
 
     @Test
-    fun `legacy multiline results preserve unchanged line translations when a line is inserted`() {
+    fun `multiline results are invalidated as a whole when source lines change`() {
         val history = listOf(result(paragraph("既訳一\n既訳二", "First\nSecond")))
-        assertEquals("First\n追加\nSecond", translationDocument("既訳一\n追加\n既訳二", history).text)
-        assertEquals("First\n\nSecond", translationDocument("既訳一\n\n既訳二", history).text)
+        assertEquals("既訳一\n追加\n既訳二", translationDocument("既訳一\n追加\n既訳二", history).text)
+        assertEquals("既訳一\n\n既訳二", translationDocument("既訳一\n\n既訳二", history).text)
     }
 
     private fun result(vararg paragraphs: ParagraphTranslation) =
@@ -230,5 +232,29 @@ class TranslationScrollMappingTest {
         assertEquals("\n\nend", display.text)
         assertEquals(0, display.displayOffset(3))
         assertEquals(2, display.displayOffset(7))
+    }
+
+    @Test
+    fun `redistributed multiline translation preserves every source line anchor`() {
+        val source = "This feature allows you to\ntranslate visible text.\n\nafter"
+        val original = source.substringBefore("\n\n")
+        val range = Range(Position(0, 0), Position(1, 23))
+        val display = translationDocument(source, listOf(result(
+            paragraph(original, "表示中のテキストを翻訳できます。\n").copy(range = range),
+        )))
+        assertEquals("表示中のテキストを翻訳できます。\n\n\nafter", display.text)
+        val sourceStarts = listOf(0) + source.indices.filter { source[it] == '\n' }.map { it + 1 }
+        val displayStarts = listOf(0) + display.text.indices.filter { display.text[it] == '\n' }.map { it + 1 }
+        assertEquals(sourceStarts.size, displayStarts.size)
+        sourceStarts.zip(displayStarts).forEach { (originalOffset, displayOffset) ->
+            assertEquals(displayOffset, display.displayOffset(originalOffset))
+            assertEquals(originalOffset, display.sourceOffset(displayOffset))
+        }
+    }
+
+    @Test
+    fun `editing a redistributed paragraph does not reuse individual translated lines`() {
+        val saved = result(paragraph("first\nsecond", "全文の訳\n"))
+        assertEquals("first\nchanged", translationDocument("first\nchanged", listOf(saved)).text)
     }
 }

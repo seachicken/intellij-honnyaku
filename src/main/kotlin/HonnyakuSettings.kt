@@ -132,7 +132,11 @@ internal data class TranslationTextRange(
 
 internal data class TranslationDocument(val text: String, val ranges: List<TranslationTextRange>) {
     fun sourceOffset(displayOffset: Int): Int {
-        val range = ranges.firstOrNull { displayOffset < it.displayEnd } ?: return ranges.lastOrNull()?.sourceEnd ?: 0
+        val range = ranges.firstOrNull {
+            displayOffset < it.displayEnd || displayOffset == it.displayStart
+        } ?: return ranges.lastOrNull()?.sourceEnd ?: 0
+        // An empty translated line still anchors to the start of its source line.
+        if (range.displayStart == range.displayEnd) return range.sourceStart
         val offset = displayOffset.coerceIn(range.displayStart, range.displayEnd)
         return range.sourceStart + ((offset - range.displayStart).toLong() *
             (range.sourceEnd - range.sourceStart) / (range.displayEnd - range.displayStart)).toInt()
@@ -170,13 +174,8 @@ internal fun translationDocument(source: String, history: List<TranslationUpdate
                 }
                 return@forEachIndexed
             }
+            // A paragraph may redistribute meaning across lines; reuse it only as a whole.
             match(result.sourceText, result.text, priority)
-            // Migrate older paragraph results where their source and translation have matching lines.
-            val originalLines = result.sourceText.split('\n')
-            val translatedLines = result.text.split('\n')
-            if (originalLines.size > 1 && originalLines.size == translatedLines.size) {
-                originalLines.zip(translatedLines).forEach { (original, translated) -> match(original, translated, priority) }
-            }
         }
     }
     val replacements = mutableListOf<Replacement>()
