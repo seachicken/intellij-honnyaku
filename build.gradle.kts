@@ -52,10 +52,10 @@ intellijPlatform {
     }
     pluginConfiguration.ideaVersion.sinceBuild = "261"
     pluginConfiguration.changeNotes = """
-        <h2>Bug Fixes</h2>
+        <h2>New Features</h2>
         <ul>
-            <li>Keep preview scrolling aligned with the source when a translated line is empty</li>
-            <li>Prevent outdated translations from being reused after editing a multiline paragraph</li>
+            <li>Translate Codex responses from the active Air conversation tab</li>
+            <li>Follow new responses automatically and translate them into your preferred language when the target language is set to Auto</li>
         </ul>
     """.trimIndent()
     nativeVariants {
