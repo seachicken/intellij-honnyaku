@@ -327,6 +327,7 @@ class HonnyakuTranslationPanel(
         projection = translationDocument(sourceDocument?.text.orEmpty(), viewModel.previewTranslations(uri).filter {
             it.targetLanguage == language
         })
+        val previewTextChanged = viewer.document.text != projection.text
         updateViewerText(projection.text)
         val source = sourceDocument?.text.orEmpty()
         loadingDecoration.update(viewModel.pendingBlocks(uri, source).map {
@@ -353,8 +354,9 @@ class HonnyakuTranslationPanel(
         )
         loadingLabel.toolTipText = if (pending > 0) "Translating…" else translationErrorDetails
         if (editor != null && !previewScrolledManually) syncWithEditor(editor)
-        if (matchingSource?.isResponse == true && !previewScrolledManually) {
-            syncWithResponse(matchingSource)
+        if (matchingSource?.isResponse == true && (previewTextChanged || !previewScrolledManually)) {
+            previewScrolledManually = false
+            syncWithResponse()
         }
         if (previewScrolledManually) project.service<TranslationSessionController>().queueVisibleTranslation()
     }
@@ -379,14 +381,13 @@ class HonnyakuTranslationPanel(
         }
     }
 
-    private fun syncWithResponse(source: TranslationSource) {
-        val offset = projection.displayOffset(source.preferredOffset).coerceIn(0, viewer.document.textLength)
+    private fun syncWithResponse() {
         syncingScroll = true
         viewer.scrollingModel.disableAnimation()
         try {
-            viewer.settings.additionalLinesCount =
-                viewer.scrollingModel.visibleArea.height / viewer.lineHeight.coerceAtLeast(1) + 1
-            viewer.scrollingModel.scrollVertically(viewer.offsetToXY(offset).y)
+            viewer.settings.additionalLinesCount = 0
+            val bottom = viewer.offsetToXY(viewer.document.textLength).y + viewer.lineHeight
+            viewer.scrollingModel.scrollVertically((bottom - viewer.scrollingModel.visibleArea.height).coerceAtLeast(0))
         } finally {
             viewer.scrollingModel.enableAnimation()
             syncingScroll = false
