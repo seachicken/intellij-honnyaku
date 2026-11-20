@@ -12,10 +12,12 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.EdtTestUtil
+import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -42,6 +44,29 @@ class TranslationSourceTest : BasePlatformTestCase() {
 
     fun testDiffExtensionIsRegistered() {
         assertTrue(DiffExtension.EP_NAME.extensionList.any { it is TranslationDiffExtension })
+    }
+
+    fun testResponsesDefaultToTheReadingLanguageWhileFilesRetainWritingAuto() {
+        val text = "This is the translated response."
+        val response = TranslationSource(
+            editor = null,
+            document = com.intellij.openapi.editor.EditorFactory.getInstance().createDocument(text),
+            file = LightVirtualFile("response.txt", PlainTextFileType.INSTANCE, text),
+            uri = "honnyaku-air:///codex/test.txt",
+            snapshotVersion = 1,
+        )
+        val preferences = TranslationPreferences(HonnyakuPreferences.SettingsState(), HonnyakuSettings.SettingsState())
+        assertEquals("ja", preferences.previewLanguage(response))
+        preferences.preferredLanguage = "fr"
+        assertEquals("fr", preferences.previewLanguage(response))
+        preferences.targetLanguage = "en"
+        assertEquals("en", preferences.previewLanguage(response))
+        preferences.targetLanguage = "Auto"
+        preferences.preferredLanguage = "ja"
+        val file = myFixture.addFileToProject("source.txt", "日本語で文章を書く").virtualFile
+        myFixture.configureFromExistingVirtualFile(file)
+        val source = requireNotNull(realTranslationSource(project, myFixture.editor))
+        assertEquals("en", preferences.previewLanguage(source))
     }
 
     fun testSideBySideUsesWorkingCopyAndEditsShareItsDocument() {

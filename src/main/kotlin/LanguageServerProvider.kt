@@ -61,7 +61,7 @@ internal class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServer
             project.service<HonnyakuSettings>().preferences.model,
             project.service<TranslationHistory>().read(),
             project.service<HonnyakuSettings>().preferences.previewLanguage(
-                project.service<TranslationSources>().current?.document?.text.orEmpty()),
+                project.service<TranslationSources>().current),
         )
 
     override val lspServerListener: LspServerListener = object : LspServerListener {
@@ -125,6 +125,9 @@ internal class HonnyakuServerDescriptor(project: Project) : ProjectWideLspServer
 }
 
 interface HonnyakuLanguageServer : LanguageServer {
+    @JsonRequest("honnyaku/readThreadResponses")
+    fun readThreadResponses(params: ThreadResponsesParams): CompletableFuture<List<String>>
+
     @JsonRequest("honnyaku/clearTranslationCache")
     fun clearTranslationCache(params: ClearTranslationCacheParams): CompletableFuture<Any?>
 
@@ -132,11 +135,15 @@ interface HonnyakuLanguageServer : LanguageServer {
     fun translateVisible(params: VisibleTranslationParams): CompletableFuture<Any?>
 }
 
+data class ThreadResponsesParams(val threadId: String)
+
 data class ClearTranslationCacheParams(val uri: String, val targetLanguage: String)
 
-internal fun supportsCacheDeletion(experimental: Any?): Boolean = when (experimental) {
-    is Map<*, *> -> experimental["honnyakuCacheDeletion"] == true
-    is JsonObject -> experimental.get("honnyakuCacheDeletion")?.let {
+internal fun supportsCacheDeletion(experimental: Any?): Boolean = supportsCapability(experimental, "honnyakuCacheDeletion")
+
+internal fun supportsCapability(experimental: Any?, name: String): Boolean = when (experimental) {
+    is Map<*, *> -> experimental[name] == true
+    is JsonObject -> experimental.get(name)?.let {
         it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean
     } == true
     else -> false
@@ -186,7 +193,7 @@ class HonnyakuLanguageClient(
                 val viewModel = project.service<HonnyakuSettings>().viewModel
                 viewModel.resetRuntimeState()
                 val settings = project.service<HonnyakuSettings>().preferences
-                val source = project.service<TranslationSources>().current?.document?.text.orEmpty()
+                val source = project.service<TranslationSources>().current
                 viewModel.beginUsageSession(usageSessionId, settings.model, settings.previewLanguage(source))
             }
         }

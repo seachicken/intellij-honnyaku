@@ -51,8 +51,12 @@ class TranslationSessionController(private val project: Project) : Disposable {
     private var previewViewport: (() -> TranslationViewport?)? = null
     private val viewportTimer = translationViewportTimer { translateVisible() }
     private val visibility = TranslationVisibilityGate(
-        onShow = { LspServerManager.getInstance(project).startServersIfNeeded(LanguageServerProvider::class.java) },
+        onShow = {
+            project.service<TranslationSources>().setActive(true)
+            LspServerManager.getInstance(project).startServersIfNeeded(LanguageServerProvider::class.java)
+        },
         onHide = {
+            project.service<TranslationSources>().setActive(false)
             viewportTimer.stop()
             cancelActiveRequest()
             val pending = pendingCacheClear
@@ -116,7 +120,7 @@ class TranslationSessionController(private val project: Project) : Disposable {
             lastAttempt = null
             retries.reset()
         }
-        if (project.service<TranslationSources>().current?.isDiff == true) {
+        if (project.service<TranslationSources>().current?.let { it.isDiff || it.isResponse } == true) {
             LspServerManager.getInstance(project).ensureServerStarted(
                 LanguageServerProvider::class.java, HonnyakuServerDescriptor(project),
             )
@@ -147,11 +151,19 @@ class TranslationSessionController(private val project: Project) : Disposable {
         val file = source.file
         if (!isTranslationFile(file)) return
         val preview = previewViewport?.invoke()?.takeIf { it.document === document }
-        val area = editor.scrollingModel.visibleArea
-        if (preview == null && (area.height <= 0 || area.width <= 0)) return
-        val first = preview?.firstLine ?: source.sourceLine(editor.xyToLogicalPosition(Point(area.x, area.y)).line)
-        val last = preview?.lastLine ?: source.sourceLine(editor.xyToLogicalPosition(Point(area.x, area.y + area.height - 1)).line)
-        val window = translationLineWindow(first, last, document.lineCount)
+        if (document.textLength == 0) return
+        val window = if (preview != null) {
+            translationLineWindow(preview.firstLine, preview.lastLine, document.lineCount)
+        } else {
+            if (editor == null) return
+            val area = editor.scrollingModel.visibleArea
+            if (area.height <= 0 || area.width <= 0) return
+            translationLineWindow(
+                source.sourceLine(editor.xyToLogicalPosition(Point(area.x, area.y)).line),
+                source.sourceLine(editor.xyToLogicalPosition(Point(area.x, area.y + area.height - 1)).line),
+                document.lineCount,
+            )
+        }
         if (!supportsViewportTranslation(server.initializeResult?.capabilities?.experimental)) return
         if (!isWholeDocumentTranslation(file) &&
             !supportsRangeTranslation(server.initializeResult?.capabilities?.experimental)) return
@@ -164,23 +176,29 @@ class TranslationSessionController(private val project: Project) : Disposable {
             }
         }
         val params = VisibleTranslationParams(
-            VisibleTranslationDocument(server.getDocumentIdentifier(file).uri, server.getDocumentVersion(document), document.text),
+            VisibleTranslationDocument(
+                if (source.isResponse) source.uri else server.getDocumentIdentifier(file).uri,
+                source.snapshotVersion ?: server.getDocumentVersion(document), document.text,
+            ),
             window.first, window.second, ranges,
         )
         val attempt = Attempt(server, params)
         if (lastAttempt == attempt || !retries.canAttempt(attempt)) return
         lastAttempt = attempt
         val request = Request(server)
-        val diffOnly = source.isDiff && !FileEditorManager.getInstance(project).isFileOpen(file)
+        val manuallySynchronized = source.isResponse ||
+            (source.isDiff && !FileEditorManager.getInstance(project).isFileOpen(file))
         val languageId = server.descriptor.getLanguageId(file)
+        val snapshotStamp = document.modificationStamp
         activeRequest = request
         // Only one request is outstanding. Once it completes, recompute the viewport
         // rather than draining a queue of positions passed during a fast scroll.
         ApplicationManager.getApplication().executeOnPooledThread {
             var failed = false
             try {
-                translateSnapshot(server, params, diffOnly, languageId) {
-                    server.getDocumentVersion(document) == params.textDocument.version
+                translateSnapshot(server, params, manuallySynchronized, languageId) {
+                    if (source.isResponse) document.modificationStamp == snapshotStamp
+                    else server.getDocumentVersion(document) == params.textDocument.version
                 }
             } catch (exception: Exception) {
                 failed = true
@@ -377,19 +395,19 @@ internal fun textTranslationRanges(project: Project, document: Document): List<R
     return ranges
 }
 
-/** Diff-only files are not opened by FileEditorManager, so the IDE may not send didOpen. */
+/** Diff-only files and Air responses are outside the platform's document synchronization. */
 internal fun translateSnapshot(
     server: LspServer,
     params: VisibleTranslationParams,
-    diffOnly: Boolean,
+    manuallySynchronized: Boolean,
     languageId: String,
     snapshotIsCurrent: () -> Boolean = { true },
 ) {
     // The platform may consume RPC errors instead of throwing them to this caller.
-    // Diff-only documents are outside its didOpen lifecycle, so register the snapshot first.
-    if (diffOnly && !snapshotIsCurrent()) return
+    // Register each externally managed snapshot before requesting its translation.
+    if (manuallySynchronized && !snapshotIsCurrent()) return
     server.sendRequestSync(150_000) {
-        if (diffOnly) {
+        if (manuallySynchronized) {
             val doc = params.textDocument
             it.textDocumentService.didOpen(
                 DidOpenTextDocumentParams(TextDocumentItem(doc.uri, languageId, doc.version, doc.text)),

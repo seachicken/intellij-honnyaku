@@ -33,9 +33,9 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.platform.lsp.api.LspServerState
 import com.intellij.platform.lsp.api.LspServerManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
@@ -191,7 +191,8 @@ class HonnyakuTranslationPanel(
         ApplicationManager.getApplication().messageBus.connect(this)
             .subscribe(PreferredLanguageListener.TOPIC, PreferredLanguageListener { refreshSelectedFile() })
         project.service<TranslationSessionController>().registerPreviewViewport(this) {
-            if (disposed || !isShowing || !previewScrolledManually) null else {
+            if (disposed || !isShowing || (!previewScrolledManually &&
+                    project.service<TranslationSources>().current?.isResponse != true)) null else {
                 sourceDocument?.let { source ->
                     val area = viewer.scrollingModel.visibleArea
                     if (area.height <= 0 || area.width <= 0) null else {
@@ -281,11 +282,12 @@ class HonnyakuTranslationPanel(
         modelSelector.updateCatalog(viewModel.modelCatalog)
         modelSelector.updateReasoningEffort(viewModel.reasoningEffort(uri))
         val selectedSource = project.service<TranslationSources>().current
-        val editor = selectedSource?.editor?.takeIf { editorMatchesUri(it, uri) }
-        val file = uri?.let {
+        val matchingSource = selectedSource?.takeIf { uri != null && URI(it.uri).normalize() == URI(uri).normalize() }
+        val editor = matchingSource?.editor?.takeUnless { it.isDisposed }
+        val file = matchingSource?.file ?: uri?.let {
             runCatching { LocalFileSystem.getInstance().findFileByNioFile(java.nio.file.Path.of(URI(it))) }.getOrNull()
         }
-        sourceDocument = selectedSource?.takeIf { it.editor === editor }?.document
+        sourceDocument = matchingSource?.document
             ?: file?.let { FileDocumentManager.getInstance().getDocument(it) }
         if (uri != displayedUri) {
             previewScrolledManually = false
@@ -304,11 +306,18 @@ class HonnyakuTranslationPanel(
             viewer.settings.isWhitespacesShown = editor.settings.isWhitespacesShown
             viewer.settings.isRightMarginShown = editor.settings.isRightMarginShown
             viewer.settings.isFoldingOutlineShown = false
+        } else if (matchingSource?.isResponse == true) {
+            viewer.settings.isUseSoftWraps = true
+            viewer.settings.isLineNumbersShown = false
+            viewer.settings.isWhitespacesShown = false
+            viewer.settings.isRightMarginShown = false
+            viewer.settings.isFoldingOutlineShown = false
         }
-        val language = modelSettings.previewLanguage(sourceDocument?.text.orEmpty())
+        val language = matchingSource?.let { modelSettings.previewLanguage(it) }
+            ?: modelSettings.previewLanguage(sourceDocument?.text.orEmpty())
         val previousLanguage = activeLanguage
         activeLanguage = language
-        languageControls.updateTarget(modelSettings.resolvedTarget(sourceDocument?.text.orEmpty()))
+        languageControls.updateTarget(language)
         if (previousLanguage != null && previousLanguage != language) {
             viewModel.resetRuntimeState()
             restartServer()
@@ -325,10 +334,18 @@ class HonnyakuTranslationPanel(
         })
         val pending = viewModel.pendingCount(uri)
         val errors = viewModel.translation(uri)?.takeIf { it.targetLanguage == language }?.translations.orEmpty().mapNotNull { it.error }
-        loadingStatus.isVisible = pending > 0 || errors.isNotEmpty()
+        val waitingForResponse = matchingSource?.isResponse == true && sourceDocument?.textLength == 0
+        loadingStatus.isVisible = pending > 0 || errors.isNotEmpty() || waitingForResponse
         loadingIcon.isVisible = pending > 0
         if (pending > 0 && isShowing) loadingIcon.resume() else loadingIcon.suspend()
         loadingLabel.text = if (pending > 0) "Translating $pending line${if (pending == 1) "" else "s"}…"
+            else if (waitingForResponse) {
+                val server = LspServerManager.getInstance(project).getServersForProvider(LanguageServerProvider::class.java)
+                    .firstOrNull { it.state == LspServerState.Running }
+                if (server != null && !supportsCapability(server.initializeResult?.capabilities?.experimental, "honnyakuThreadResponses"))
+                    "Update the Honnyaku server to translate Codex responses."
+                else "Waiting for a Codex response…"
+            }
             else "Translation failed · Click to copy error"
         translationErrorDetails = if (pending > 0) "" else errors.distinct().joinToString("\n")
         loadingLabel.cursor = java.awt.Cursor.getPredefinedCursor(
@@ -336,6 +353,9 @@ class HonnyakuTranslationPanel(
         )
         loadingLabel.toolTipText = if (pending > 0) "Translating…" else translationErrorDetails
         if (editor != null && !previewScrolledManually) syncWithEditor(editor)
+        if (matchingSource?.isResponse == true && !previewScrolledManually) {
+            syncWithResponse(matchingSource)
+        }
         if (previewScrolledManually) project.service<TranslationSessionController>().queueVisibleTranslation()
     }
 
@@ -359,10 +379,19 @@ class HonnyakuTranslationPanel(
         }
     }
 
-    private fun editorMatchesUri(editor: Editor, uri: String?): Boolean {
-        if (uri == null || editor.isDisposed) return false
-        val file = project.service<TranslationSources>().current?.takeIf { it.editor === editor }?.file ?: return false
-        return VfsUtilCore.virtualToIoFile(file).toURI().normalize() == URI(uri).normalize()
+    private fun syncWithResponse(source: TranslationSource) {
+        val offset = projection.displayOffset(source.preferredOffset).coerceIn(0, viewer.document.textLength)
+        syncingScroll = true
+        viewer.scrollingModel.disableAnimation()
+        try {
+            viewer.settings.additionalLinesCount =
+                viewer.scrollingModel.visibleArea.height / viewer.lineHeight.coerceAtLeast(1) + 1
+            viewer.scrollingModel.scrollVertically(viewer.offsetToXY(offset).y)
+        } finally {
+            viewer.scrollingModel.enableAnimation()
+            syncingScroll = false
+        }
+        project.service<TranslationSessionController>().queueVisibleTranslation()
     }
 
     private fun syncWithEditor(editor: Editor) {

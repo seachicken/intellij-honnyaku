@@ -24,13 +24,19 @@ import java.awt.event.HierarchyListener
 
 /** The displayed editor can use a synthetic document, as in a unified diff. */
 internal data class TranslationSource(
-    val editor: Editor,
+    val editor: Editor?,
     val document: Document,
     val file: VirtualFile,
     val isDiff: Boolean = false,
     val sourceLine: (Int) -> Int = { it },
+    val uri: String = VfsUtilCore.virtualToIoFile(file).toURI().toASCIIString(),
+    val snapshotVersion: Int? = null,
+    val preferredOffset: Int = 0,
 ) {
+    val isResponse: Boolean get() = snapshotVersion != null
+
     fun sourceOffset(editorOffset: Int): Int {
+        val editor = editor ?: return editorOffset.coerceIn(0, document.textLength)
         val offset = editorOffset.coerceIn(0, editor.document.textLength)
         val line = editor.document.getLineNumber(offset)
         val column = offset - editor.document.getLineStartOffset(line)
@@ -39,10 +45,18 @@ internal data class TranslationSource(
     }
 }
 
+/** Responses are read back in the preferred language; file Auto remains optimized for writing. */
+internal fun TranslationPreferences.previewLanguage(source: TranslationSource?): String =
+    if (source?.isResponse == true && targetLanguage == "Auto") preferredLanguage
+    else previewLanguage(source?.document?.text.orEmpty())
+
 @Service(Service.Level.PROJECT)
-internal class TranslationSources(private val project: Project) {
+internal class TranslationSources(private val project: Project) : Disposable {
     private val diffs = mutableListOf<TranslationSource>()
     private val listeners = mutableListOf<() -> Unit>()
+    private val air = AirCodexTranslationSource(project, this, ::changed)
+
+    fun setActive(active: Boolean) { air.setActive(active) }
 
     fun subscribe(parent: Disposable, listener: () -> Unit) {
         listeners.add(listener)
@@ -50,7 +64,8 @@ internal class TranslationSources(private val project: Project) {
     }
 
     val current: TranslationSource?
-        get() = diffs.lastOrNull { !it.editor.isDisposed && it.editor.component.isShowing }
+        get() = diffs.lastOrNull { it.editor?.let { editor -> !editor.isDisposed && editor.component.isShowing } == true }
+            ?: air.current
             ?: FileEditorManager.getInstance(project).selectedTextEditor?.let { editor ->
                 realTranslationSource(project, editor)
             }
@@ -60,9 +75,10 @@ internal class TranslationSources(private val project: Project) {
         val listener = HierarchyListener { event ->
             if (event.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) changed()
         }
-        source.editor.component.addHierarchyListener(listener)
+        val editor = requireNotNull(source.editor)
+        editor.component.addHierarchyListener(listener)
         Disposer.register(parent, Disposable {
-            source.editor.component.removeHierarchyListener(listener)
+            editor.component.removeHierarchyListener(listener)
             diffs.remove(source)
             changed()
         })
@@ -74,13 +90,15 @@ internal class TranslationSources(private val project: Project) {
             if (!project.isDisposed) {
                 current?.let {
                     project.service<HonnyakuSettings>().viewModel.selectedUri =
-                        VfsUtilCore.virtualToIoFile(it.file).toURI().toASCIIString()
+                        it.uri
                 }
                 listeners.toList().forEach { it() }
                 project.service<TranslationSessionController>().queueVisibleTranslation()
             }
         }
     }
+
+    override fun dispose() {}
 }
 
 internal fun realTranslationSource(project: Project, editor: Editor): TranslationSource? {

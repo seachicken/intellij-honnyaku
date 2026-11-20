@@ -12,7 +12,6 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.util.messages.Topic
 
 fun interface PreferredLanguageListener {
@@ -92,9 +91,8 @@ class HonnyakuSettings(private val project: Project) : PersistentStateComponent<
             })
     }
 
-    private fun selectedFileUri(): String? = project.service<TranslationSources>().current?.file
-        ?.takeIf { isTranslationFile(it) }
-        ?.let { VfsUtilCore.virtualToIoFile(it).toURI().toASCIIString() }
+    private fun selectedFileUri(): String? = project.service<TranslationSources>().current
+        ?.takeIf { isTranslationFile(it.file) }?.uri
 
     override fun dispose() { viewModel.dispose() }
 }
